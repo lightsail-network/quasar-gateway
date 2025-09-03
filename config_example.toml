@@ -1,0 +1,31 @@
+# Quasar Gateway Configuration Example
+# Copy this file to config.toml and modify for your setup
+
+[server]
+host = "0.0.0.0"           # Listen on all interfaces
+port = 8080                # Main HTTP port
+health_port = 8081         # Health check port (default: main port + 1)
+graceful_shutdown_sec = 30 # Time to wait before shutdown (default: 30)
+type = "rpc"               # Gateway type: "rpc" or "s3" (default: "rpc")
+
+# RPC Configuration (for type = "rpc")
+[rpc]
+url = "http://localhost:8545" # Your RPC server URL
+
+# S3 Configuration (for type = "s3")
+[s3]
+endpoint = "https://s3.amazonaws.com" # S3 endpoint URL (leave empty for AWS S3)
+region = "us-east-1"                  # S3 region (use "auto" for Cloudflare R2)
+bucket = "your-bucket-name"           # S3 bucket name
+access_key_id = "your-access-key-id"  # S3 access key ID
+secret_key = "your-secret-access-key" # S3 secret access key
+path_prefix = "/files"                # URL path prefix (not used when type=s3)
+
+# Authentication (required for both types)
+[auth]
+service_url = "http://localhost:9090"     # Authentication service base URL
+service_token = "your-auth-service-token" # Token for auth service requests
+cache_expiration = 300                    # Cache TTL in seconds (default: 300)
+http_timeout = 5                          # HTTP request timeout in seconds (default: 5)
+cache_size = 10000                        # Maximum number of cached entries (default: 10000)
+fail_open = false                         # Allow requests when auth service is down (default: false)
