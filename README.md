@@ -1,6 +1,6 @@
 # Quasar Gateway
 
-A high-performance RPC gateway service that provides API key validation and request proxying functionality.
+A high-performance gateway service that provides API key validation and request proxying functionality.
 
 ## Quick Start
 
