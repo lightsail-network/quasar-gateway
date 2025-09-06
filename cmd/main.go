@@ -350,6 +350,12 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleS3(w http.ResponseWriter, r *http.Request) {
+	// Skip authentication for CORS preflight requests
+	if r.Method == "OPTIONS" {
+		g.s3Proxy.ServeHTTP(w, r)
+		return
+	}
+
 	// Extract API key from Authorization header
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
@@ -379,6 +385,12 @@ func (g *Gateway) handleS3(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
+	// Skip authentication for CORS preflight requests
+	if r.Method == "OPTIONS" {
+		g.rpcProxy.ServeHTTP(w, r)
+		return
+	}
+
 	// Extract API key from Authorization header
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
