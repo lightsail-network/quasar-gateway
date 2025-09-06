@@ -391,14 +391,25 @@ func (g *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract API key from Authorization header
-	auth := r.Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "Bearer ") {
-		http.Error(w, "Missing or invalid Authorization header", http.StatusUnauthorized)
-		return
+	var apiKey string
+
+	// Try to extract API key from URL path first (format: /token)
+	path := strings.TrimPrefix(r.URL.Path, "/")
+	if path != "" && !strings.Contains(path, "/") {
+		// Path contains only the token, no additional path segments
+		apiKey = path
+		// Modify the request path to root for the backend
+		r.URL.Path = "/"
+	} else {
+		// Fall back to Authorization header
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			http.Error(w, "Missing or invalid Authorization header or token in URL path", http.StatusUnauthorized)
+			return
+		}
+		apiKey = strings.TrimPrefix(auth, "Bearer ")
 	}
 
-	apiKey := strings.TrimPrefix(auth, "Bearer ")
 	if apiKey == "" {
 		http.Error(w, "Empty API key", http.StatusUnauthorized)
 		return

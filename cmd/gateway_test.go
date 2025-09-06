@@ -386,3 +386,186 @@ func TestGateway_HealthServerCustomPort(t *testing.T) {
 
 	assert.Contains(t, gateway.healthServer.Addr, ":9000")
 }
+
+func TestGateway_HandleProxy_URLToken(t *testing.T) {
+	cfg := createTestConfig("rpc")
+	cfg.Auth.FailOpen = false // Ensure authentication failures result in 401
+	gateway, err := NewGateway(cfg)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("POST", "/test-token-123", strings.NewReader(`{"test": "data"}`))
+	rr := httptest.NewRecorder()
+
+	gateway.handleProxy(rr, req)
+
+	// Should fail authentication since auth service is unreachable
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	// Check that URL path was modified to root
+	assert.Equal(t, "/", req.URL.Path)
+}
+
+func TestGateway_HandleProxy_URLTokenEmpty(t *testing.T) {
+	cfg := createTestConfig("rpc")
+	gateway, err := NewGateway(cfg)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"test": "data"}`))
+	rr := httptest.NewRecorder()
+
+	gateway.handleProxy(rr, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	assert.Contains(t, rr.Body.String(), "Missing or invalid Authorization header or token in URL path")
+}
+
+func TestGateway_HandleProxy_URLTokenWithPath(t *testing.T) {
+	cfg := createTestConfig("rpc")
+	gateway, err := NewGateway(cfg)
+	require.NoError(t, err)
+
+	// URL with multiple path segments should fall back to header auth
+	req := httptest.NewRequest("POST", "/api/v1/method", strings.NewReader(`{"test": "data"}`))
+	rr := httptest.NewRecorder()
+
+	gateway.handleProxy(rr, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	assert.Contains(t, rr.Body.String(), "Missing or invalid Authorization header or token in URL path")
+	// Path should remain unchanged since it contains multiple segments
+	assert.Equal(t, "/api/v1/method", req.URL.Path)
+}
+
+func TestGateway_HandleProxy_FallbackToHeader(t *testing.T) {
+	cfg := createTestConfig("rpc")
+	cfg.Auth.FailOpen = false // Ensure authentication failures result in proper error
+	gateway, err := NewGateway(cfg)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("POST", "/api/method", strings.NewReader(`{"test": "data"}`))
+	req.Header.Set("Authorization", "Bearer test-token")
+	rr := httptest.NewRecorder()
+
+	gateway.handleProxy(rr, req)
+
+	// Should fail auth since auth service is unreachable  
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	// Path should remain unchanged
+	assert.Equal(t, "/api/method", req.URL.Path)
+}
+
+func TestGateway_HandleProxy_OPTIONS_SkipAuth(t *testing.T) {
+	cfg := createTestConfig("rpc")
+	gateway, err := NewGateway(cfg)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("OPTIONS", "/api/method", nil)
+	rr := httptest.NewRecorder()
+
+	gateway.handleProxy(rr, req)
+
+	// OPTIONS requests should skip authentication and go to RPC proxy
+	// Since we don't have a real RPC server, this may fail but won't be a 401
+	assert.NotEqual(t, http.StatusUnauthorized, rr.Code)
+}
+
+func TestGateway_HandleProxy_URLToken_Integration(t *testing.T) {
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req auth.AuthRequest
+		json.NewDecoder(r.Body).Decode(&req)
+
+		// Accept tokens that start with "valid-"
+		valid := strings.HasPrefix(req.KeySecret, "valid-")
+		resp := auth.AuthResponse{Valid: valid}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer authServer.Close()
+
+	rpcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, `{"result": "success", "path": "%s"}`, r.URL.Path)
+	}))
+	defer rpcServer.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Host:                "127.0.0.1",
+			Port:                0,
+			HealthPort:          0,
+			GracefulShutdownSec: 1,
+			Type:                "rpc",
+		},
+		RPC: config.RPCConfig{
+			URL: rpcServer.URL,
+		},
+		Auth: config.AuthConfig{
+			ServiceURL:      authServer.URL,
+			ServiceToken:    "test-token",
+			CacheExpiration: 300,
+			HTTPTimeout:     5,
+			CacheSize:       1000,
+			FailOpen:        false,
+		},
+	}
+
+	gateway, err := NewGateway(cfg)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name           string
+		path           string
+		header         string
+		expectedStatus int
+		expectedPath   string
+	}{
+		{
+			name:           "valid URL token",
+			path:           "/valid-token-123",
+			header:         "",
+			expectedStatus: http.StatusOK,
+			expectedPath:   "/", // Should be rewritten to root
+		},
+		{
+			name:           "invalid URL token",
+			path:           "/invalid-token-123",
+			header:         "",
+			expectedStatus: http.StatusUnauthorized,
+			expectedPath:   "/", // Should still be rewritten
+		},
+		{
+			name:           "valid header token with path",
+			path:           "/api/v1/method",
+			header:         "Bearer valid-header-token",
+			expectedStatus: http.StatusOK,
+			expectedPath:   "/api/v1/method", // Should remain unchanged
+		},
+		{
+			name:           "invalid header token with path",
+			path:           "/api/v1/method",
+			header:         "Bearer invalid-header-token",
+			expectedStatus: http.StatusUnauthorized,
+			expectedPath:   "/api/v1/method", // Should remain unchanged
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", tt.path, strings.NewReader(`{"method": "test"}`))
+			if tt.header != "" {
+				req.Header.Set("Authorization", tt.header)
+			}
+			req.Header.Set("Content-Type", "application/json")
+
+			rr := httptest.NewRecorder()
+
+			gateway.handleProxy(rr, req)
+
+			assert.Equal(t, tt.expectedStatus, rr.Code)
+			if rr.Code == http.StatusOK {
+				assert.Contains(t, rr.Body.String(), fmt.Sprintf(`"path": "%s"`, tt.expectedPath))
+			}
+		})
+	}
+}
