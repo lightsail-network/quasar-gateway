@@ -47,7 +47,9 @@ nano config.toml
 
 - **URL**: `:8080/` (all paths)
 - **Method**: `Any`
-- **Authentication**: Requires `Authorization: Bearer <api-key>` header
+- **Authentication**: 
+  - Header: `Authorization: Bearer <api-key>`
+  - URL (RPC only): `/:8080/<api-key>` (token in path, path rewritten to root)
 
 ### Health Check
 
@@ -61,11 +63,20 @@ nano config.toml
 # Health check (no auth required)
 curl http://localhost:8081/health
 
-# API request (auth required)
+# RPC request with header authentication
 curl -H "Authorization: Bearer your-api-key" \
      -H "Content-Type: application/json" \
      -d '{"jsonrpc":"2.0","id":1,"method":"someMethod"}' \
      http://localhost:8080/
+
+# RPC request with URL authentication (token in path)
+curl -H "Content-Type: application/json" \
+     -d '{"jsonrpc":"2.0","id":1,"method":"someMethod"}' \
+     http://localhost:8080/your-api-key
+
+# S3 request (header authentication only)
+curl -H "Authorization: Bearer your-api-key" \
+     http://localhost:8080/path/to/file.txt
 ```
 
 ## Auth Service API
