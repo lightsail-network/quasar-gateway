@@ -447,7 +447,7 @@ func TestGateway_HandleRPC_FallbackToHeader(t *testing.T) {
 
 	gateway.handleRPC(rr, req)
 
-	// Should fail auth since auth service is unreachable  
+	// Should fail auth since auth service is unreachable
 	assert.Equal(t, http.StatusInternalServerError, rr.Code)
 	// Path should remain unchanged
 	assert.Equal(t, "/api/method", req.URL.Path)
