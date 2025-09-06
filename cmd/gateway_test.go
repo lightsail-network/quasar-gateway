@@ -453,6 +453,7 @@ func TestGateway_HandleProxy_FallbackToHeader(t *testing.T) {
 	assert.Equal(t, "/api/method", req.URL.Path)
 }
 
+// RPC Gateway OPTIONS Tests
 func TestGateway_HandleProxy_OPTIONS_SkipAuth(t *testing.T) {
 	cfg := createTestConfig("rpc")
 	gateway, err := NewGateway(cfg)
@@ -465,6 +466,22 @@ func TestGateway_HandleProxy_OPTIONS_SkipAuth(t *testing.T) {
 
 	// OPTIONS requests should skip authentication and go to RPC proxy
 	// Since we don't have a real RPC server, this may fail but won't be a 401
+	assert.NotEqual(t, http.StatusUnauthorized, rr.Code)
+}
+
+// S3 Gateway OPTIONS Tests
+func TestGateway_HandleS3_OPTIONS_SkipAuth(t *testing.T) {
+	cfg := createTestConfig("s3")
+	gateway, err := NewGateway(cfg)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("OPTIONS", "/test-file.txt", nil)
+	rr := httptest.NewRecorder()
+
+	gateway.handleS3(rr, req)
+
+	// OPTIONS requests should skip authentication and go to S3 proxy
+	// Since we don't have a real S3 server, this may fail but won't be a 401
 	assert.NotEqual(t, http.StatusUnauthorized, rr.Code)
 }
 
