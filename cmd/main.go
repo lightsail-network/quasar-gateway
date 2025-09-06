@@ -281,14 +281,14 @@ func NewGateway(cfg *config.Config) (*Gateway, error) {
 	// Configure routes based on gateway type
 	switch gatewayType {
 	case "rpc":
-		// RPC proxy for all paths
-		mux.HandleFunc("/", gateway.handleProxy)
-		log.Println("RPC proxy routes registered at /*")
+		// RPC handler for all paths
+		mux.HandleFunc("/", gateway.handleRPC)
+		log.Println("RPC handler routes registered at /*")
 
 	case "s3":
-		// S3 file access for all paths
+		// S3 handler for all paths
 		mux.HandleFunc("/", gateway.handleS3)
-		log.Println("S3 proxy routes registered at /*")
+		log.Println("S3 handler routes registered at /*")
 	}
 
 	gateway.server = &http.Server{
@@ -384,7 +384,7 @@ func (g *Gateway) handleS3(w http.ResponseWriter, r *http.Request) {
 	g.s3Proxy.ServeHTTP(w, r)
 }
 
-func (g *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
+func (g *Gateway) handleRPC(w http.ResponseWriter, r *http.Request) {
 	// Skip authentication for CORS preflight requests
 	if r.Method == "OPTIONS" {
 		g.rpcProxy.ServeHTTP(w, r)
