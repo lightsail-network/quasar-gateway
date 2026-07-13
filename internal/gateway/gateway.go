@@ -158,30 +158,41 @@ func writeHealthResponse(w http.ResponseWriter, statusCode int, reason string) {
 }
 
 // Start runs both servers until SIGINT/SIGTERM, then drains traffic and shuts
-// down gracefully.
+// down gracefully. It also returns if either server fails to run.
 func (g *Gateway) Start() error {
 	slog.Info("starting gateway server", "addr", g.server.Addr)
 	slog.Info("starting health server", "addr", g.healthServer.Addr)
 
-	// Start main server
+	// Server failures (e.g. a busy port) are reported here instead of
+	// exiting from inside a goroutine, so cleanup still runs.
+	serverErr := make(chan error, 2)
+
 	go func() {
 		if err := g.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("gateway server failed", "error", err)
-			os.Exit(1)
+			serverErr <- fmt.Errorf("gateway server: %w", err)
 		}
 	}()
 
-	// Start health server
 	go func() {
 		if err := g.healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("health server failed", "error", err)
-			os.Exit(1)
+			serverErr <- fmt.Errorf("health server: %w", err)
 		}
 	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+
+	select {
+	case err := <-serverErr:
+		// One server failed; stop the other and report the failure.
+		slog.Error("server failed", "error", err)
+		g.isHealthy.Store(false)
+		if shutdownErr := g.shutdown(); shutdownErr != nil {
+			slog.Error("shutdown after server failure", "error", shutdownErr)
+		}
+		return err
+	case <-quit:
+	}
 
 	slog.Info("shutdown signal received, starting graceful shutdown")
 
@@ -195,12 +206,16 @@ func (g *Gateway) Start() error {
 	slog.Info("waiting for existing requests to complete", "wait", gracefulWait)
 	time.Sleep(gracefulWait)
 
+	return g.shutdown()
+}
+
+// shutdown stops both servers and closes the authenticator.
+func (g *Gateway) shutdown() error {
 	slog.Info("starting server shutdown")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Shutdown both servers
 	var shutdownErr error
 	if err := g.server.Shutdown(ctx); err != nil {
 		slog.Error("gateway server forced to shutdown", "error", err)
