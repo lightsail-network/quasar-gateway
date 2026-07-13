@@ -1,17 +1,18 @@
-package main
+package gateway
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"quasar-gateway/config"
 	"quasar-gateway/internal/auth"
+	"quasar-gateway/internal/rpc"
+	"quasar-gateway/internal/s3"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,58 +48,63 @@ func createTestConfig(serverType string) *config.Config {
 	}
 }
 
-func TestNewGateway_RPC(t *testing.T) {
+// serve sends req through the gateway's real handler chain (mux + auth
+// middleware + backend) and returns the recorded response.
+func serve(g *Gateway, req *http.Request) *httptest.ResponseRecorder {
+	rr := httptest.NewRecorder()
+	g.server.Handler.ServeHTTP(rr, req)
+	return rr
+}
+
+func TestNew_RPC(t *testing.T) {
 	cfg := createTestConfig("rpc")
 
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 	assert.NotNil(t, gateway)
 	assert.Equal(t, cfg, gateway.config)
 	assert.NotNil(t, gateway.authenticator)
-	assert.NotNil(t, gateway.rpcProxy)
 	assert.NotNil(t, gateway.healthChecker)
-	assert.Nil(t, gateway.s3Proxy)
+	assert.IsType(t, &rpc.RPCProxy{}, gateway.backend)
 	assert.True(t, gateway.isHealthy.Load())
 	assert.Equal(t, 30*time.Second, gateway.server.WriteTimeout)
 }
 
-func TestNewGateway_S3(t *testing.T) {
+func TestNew_S3(t *testing.T) {
 	cfg := createTestConfig("s3")
 
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 	assert.NotNil(t, gateway)
 	assert.Equal(t, cfg, gateway.config)
 	assert.NotNil(t, gateway.authenticator)
-	assert.NotNil(t, gateway.s3Proxy)
 	assert.NotNil(t, gateway.healthChecker)
-	assert.Nil(t, gateway.rpcProxy)
+	assert.IsType(t, &s3.S3Proxy{}, gateway.backend)
 	assert.True(t, gateway.isHealthy.Load())
 	// No write deadline in S3 mode: large downloads must not be cut off.
 	assert.Zero(t, gateway.server.WriteTimeout)
 }
 
-func TestNewGateway_UnsupportedType(t *testing.T) {
+func TestNew_UnsupportedType(t *testing.T) {
 	cfg := createTestConfig("unsupported")
 
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported gateway type")
 	assert.Nil(t, gateway)
 }
 
-func TestNewGateway_DefaultType(t *testing.T) {
+func TestNew_DefaultType(t *testing.T) {
 	cfg := createTestConfig("")
 
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
-	assert.NotNil(t, gateway.rpcProxy)
-	assert.Nil(t, gateway.s3Proxy)
+	assert.IsType(t, &rpc.RPCProxy{}, gateway.backend)
 }
 
 func TestGateway_HandleHealth_Healthy(t *testing.T) {
 	cfg := createTestConfig("rpc")
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest("GET", "/health", nil)
@@ -113,7 +119,7 @@ func TestGateway_HandleHealth_Healthy(t *testing.T) {
 
 func TestGateway_HandleHealth_Unhealthy(t *testing.T) {
 	cfg := createTestConfig("rpc")
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 
 	gateway.isHealthy.Store(false)
@@ -129,13 +135,11 @@ func TestGateway_HandleHealth_Unhealthy(t *testing.T) {
 
 func TestGateway_HandleRPC_MissingAuthHeader(t *testing.T) {
 	cfg := createTestConfig("rpc")
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest("POST", "/rpc/method", strings.NewReader(`{"test": "data"}`))
-	rr := httptest.NewRecorder()
-
-	gateway.handleRPC(rr, req)
+	rr := serve(gateway, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
 	assert.Contains(t, rr.Body.String(), "Missing or invalid Authorization header")
@@ -143,14 +147,12 @@ func TestGateway_HandleRPC_MissingAuthHeader(t *testing.T) {
 
 func TestGateway_HandleRPC_InvalidAuthHeader(t *testing.T) {
 	cfg := createTestConfig("rpc")
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest("POST", "/rpc/method", strings.NewReader(`{"test": "data"}`))
 	req.Header.Set("Authorization", "Invalid header")
-	rr := httptest.NewRecorder()
-
-	gateway.handleRPC(rr, req)
+	rr := serve(gateway, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
 	assert.Contains(t, rr.Body.String(), "Missing or invalid Authorization header")
@@ -158,14 +160,12 @@ func TestGateway_HandleRPC_InvalidAuthHeader(t *testing.T) {
 
 func TestGateway_HandleRPC_EmptyAPIKey(t *testing.T) {
 	cfg := createTestConfig("rpc")
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest("POST", "/rpc/method", strings.NewReader(`{"test": "data"}`))
 	req.Header.Set("Authorization", "Bearer ")
-	rr := httptest.NewRecorder()
-
-	gateway.handleRPC(rr, req)
+	rr := serve(gateway, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
 	assert.Contains(t, rr.Body.String(), "Empty API key")
@@ -173,13 +173,11 @@ func TestGateway_HandleRPC_EmptyAPIKey(t *testing.T) {
 
 func TestGateway_HandleS3_MissingAuthHeader(t *testing.T) {
 	cfg := createTestConfig("s3")
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest("GET", "/test-file.txt", nil)
-	rr := httptest.NewRecorder()
-
-	gateway.handleS3(rr, req)
+	rr := serve(gateway, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
 	assert.Contains(t, rr.Body.String(), "Missing or invalid Authorization header")
@@ -187,14 +185,12 @@ func TestGateway_HandleS3_MissingAuthHeader(t *testing.T) {
 
 func TestGateway_HandleS3_InvalidAuthHeader(t *testing.T) {
 	cfg := createTestConfig("s3")
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest("GET", "/test-file.txt", nil)
 	req.Header.Set("Authorization", "Invalid header")
-	rr := httptest.NewRecorder()
-
-	gateway.handleS3(rr, req)
+	rr := serve(gateway, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
 	assert.Contains(t, rr.Body.String(), "Missing or invalid Authorization header")
@@ -202,29 +198,15 @@ func TestGateway_HandleS3_InvalidAuthHeader(t *testing.T) {
 
 func TestGateway_HandleS3_EmptyAPIKey(t *testing.T) {
 	cfg := createTestConfig("s3")
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest("GET", "/test-file.txt", nil)
 	req.Header.Set("Authorization", "Bearer ")
-	rr := httptest.NewRecorder()
-
-	gateway.handleS3(rr, req)
+	rr := serve(gateway, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
 	assert.Contains(t, rr.Body.String(), "Empty API key")
-}
-
-func TestGetDefaultConfigPath(t *testing.T) {
-	os.Unsetenv("QUASAR_CONFIG_PATH")
-	path := getDefaultConfigPath()
-	assert.Equal(t, "config.toml", path)
-
-	os.Setenv("QUASAR_CONFIG_PATH", "/custom/path/config.toml")
-	defer os.Unsetenv("QUASAR_CONFIG_PATH")
-
-	path = getDefaultConfigPath()
-	assert.Equal(t, "/custom/path/config.toml", path)
 }
 
 func TestGateway_IntegrationWithMockServers(t *testing.T) {
@@ -247,28 +229,13 @@ func TestGateway_IntegrationWithMockServers(t *testing.T) {
 	}))
 	defer rpcServer.Close()
 
-	cfg := &config.Config{
-		Server: config.ServerConfig{
-			Host:                "127.0.0.1",
-			Port:                0,
-			HealthPort:          0,
-			GracefulShutdownSec: 1,
-			Type:                "rpc",
-		},
-		RPC: config.RPCConfig{
-			URL: rpcServer.URL,
-		},
-		Auth: config.AuthConfig{
-			ServiceURL:      authServer.URL,
-			ServiceToken:    "test-token",
-			CacheExpiration: 300,
-			HTTPTimeout:     5,
-			CacheSize:       1000,
-			FailOpen:        false,
-		},
-	}
+	cfg := createTestConfig("rpc")
+	cfg.RPC.URL = rpcServer.URL
+	cfg.Auth.ServiceURL = authServer.URL
+	cfg.Auth.ServiceToken = "test-token"
+	cfg.Auth.FailOpen = false
 
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -297,9 +264,7 @@ func TestGateway_IntegrationWithMockServers(t *testing.T) {
 			req.Header.Set("Authorization", "Bearer "+tt.apiKey)
 			req.Header.Set("Content-Type", "application/json")
 
-			rr := httptest.NewRecorder()
-
-			gateway.handleRPC(rr, req)
+			rr := serve(gateway, req)
 
 			assert.Equal(t, tt.expectedStatus, rr.Code)
 			assert.Contains(t, rr.Body.String(), tt.expectedBody)
@@ -323,7 +288,7 @@ func TestAuthenticatorConfigDefaults(t *testing.T) {
 		},
 	}
 
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 
 	assert.NotNil(t, gateway.authenticator)
@@ -334,7 +299,7 @@ func TestGateway_HealthServerConfiguration(t *testing.T) {
 	cfg.Server.Port = 8000
 	cfg.Server.HealthPort = 0
 
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 
 	assert.NotNil(t, gateway.server)
@@ -348,7 +313,7 @@ func TestGateway_HealthServerCustomPort(t *testing.T) {
 	cfg.Server.Port = 8000
 	cfg.Server.HealthPort = 9000
 
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 
 	assert.Contains(t, gateway.healthServer.Addr, ":9000")
@@ -357,13 +322,11 @@ func TestGateway_HealthServerCustomPort(t *testing.T) {
 func TestGateway_HandleRPC_URLToken(t *testing.T) {
 	cfg := createTestConfig("rpc")
 	cfg.Auth.FailOpen = false // Ensure authentication failures result in 401
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest("POST", "/test-token-123", strings.NewReader(`{"test": "data"}`))
-	rr := httptest.NewRecorder()
-
-	gateway.handleRPC(rr, req)
+	rr := serve(gateway, req)
 
 	// Should fail authentication since auth service is unreachable
 	assert.Equal(t, http.StatusInternalServerError, rr.Code)
@@ -373,13 +336,11 @@ func TestGateway_HandleRPC_URLToken(t *testing.T) {
 
 func TestGateway_HandleRPC_URLTokenEmpty(t *testing.T) {
 	cfg := createTestConfig("rpc")
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"test": "data"}`))
-	rr := httptest.NewRecorder()
-
-	gateway.handleRPC(rr, req)
+	rr := serve(gateway, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
 	assert.Contains(t, rr.Body.String(), "Missing or invalid Authorization header or token in URL path")
@@ -387,14 +348,12 @@ func TestGateway_HandleRPC_URLTokenEmpty(t *testing.T) {
 
 func TestGateway_HandleRPC_URLTokenWithPath(t *testing.T) {
 	cfg := createTestConfig("rpc")
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 
 	// URL with multiple path segments should fall back to header auth
 	req := httptest.NewRequest("POST", "/api/v1/method", strings.NewReader(`{"test": "data"}`))
-	rr := httptest.NewRecorder()
-
-	gateway.handleRPC(rr, req)
+	rr := serve(gateway, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
 	assert.Contains(t, rr.Body.String(), "Missing or invalid Authorization header or token in URL path")
@@ -405,14 +364,12 @@ func TestGateway_HandleRPC_URLTokenWithPath(t *testing.T) {
 func TestGateway_HandleRPC_FallbackToHeader(t *testing.T) {
 	cfg := createTestConfig("rpc")
 	cfg.Auth.FailOpen = false // Ensure authentication failures result in proper error
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest("POST", "/api/method", strings.NewReader(`{"test": "data"}`))
 	req.Header.Set("Authorization", "Bearer test-token")
-	rr := httptest.NewRecorder()
-
-	gateway.handleRPC(rr, req)
+	rr := serve(gateway, req)
 
 	// Should fail auth since auth service is unreachable
 	assert.Equal(t, http.StatusInternalServerError, rr.Code)
@@ -423,13 +380,11 @@ func TestGateway_HandleRPC_FallbackToHeader(t *testing.T) {
 // RPC Gateway OPTIONS Tests
 func TestGateway_HandleRPC_OPTIONS_SkipAuth(t *testing.T) {
 	cfg := createTestConfig("rpc")
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest("OPTIONS", "/api/method", nil)
-	rr := httptest.NewRecorder()
-
-	gateway.handleRPC(rr, req)
+	rr := serve(gateway, req)
 
 	// OPTIONS requests should skip authentication and go to RPC handler
 	// Since we don't have a real RPC server, this may fail but won't be a 401
@@ -439,13 +394,11 @@ func TestGateway_HandleRPC_OPTIONS_SkipAuth(t *testing.T) {
 // S3 Gateway OPTIONS Tests
 func TestGateway_HandleS3_OPTIONS_SkipAuth(t *testing.T) {
 	cfg := createTestConfig("s3")
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest("OPTIONS", "/test-file.txt", nil)
-	rr := httptest.NewRecorder()
-
-	gateway.handleS3(rr, req)
+	rr := serve(gateway, req)
 
 	// OPTIONS requests should skip authentication and go to S3 handler
 	// Since we don't have a real S3 server, this may fail but won't be a 401
@@ -473,28 +426,13 @@ func TestGateway_HandleRPC_URLToken_Integration(t *testing.T) {
 	}))
 	defer rpcServer.Close()
 
-	cfg := &config.Config{
-		Server: config.ServerConfig{
-			Host:                "127.0.0.1",
-			Port:                0,
-			HealthPort:          0,
-			GracefulShutdownSec: 1,
-			Type:                "rpc",
-		},
-		RPC: config.RPCConfig{
-			URL: rpcServer.URL,
-		},
-		Auth: config.AuthConfig{
-			ServiceURL:      authServer.URL,
-			ServiceToken:    "test-token",
-			CacheExpiration: 300,
-			HTTPTimeout:     5,
-			CacheSize:       1000,
-			FailOpen:        false,
-		},
-	}
+	cfg := createTestConfig("rpc")
+	cfg.RPC.URL = rpcServer.URL
+	cfg.Auth.ServiceURL = authServer.URL
+	cfg.Auth.ServiceToken = "test-token"
+	cfg.Auth.FailOpen = false
 
-	gateway, err := NewGateway(cfg)
+	gateway, err := New(cfg)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -542,9 +480,7 @@ func TestGateway_HandleRPC_URLToken_Integration(t *testing.T) {
 			}
 			req.Header.Set("Content-Type", "application/json")
 
-			rr := httptest.NewRecorder()
-
-			gateway.handleRPC(rr, req)
+			rr := serve(gateway, req)
 
 			assert.Equal(t, tt.expectedStatus, rr.Code)
 			if rr.Code == http.StatusOK {
