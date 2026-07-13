@@ -7,6 +7,12 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// Gateway types selectable via server.type.
+const (
+	GatewayTypeRPC = "rpc"
+	GatewayTypeS3  = "s3"
+)
+
 type Config struct {
 	Server ServerConfig `toml:"server"`
 	RPC    RPCConfig    `toml:"rpc"`
@@ -44,6 +50,9 @@ type S3Config struct {
 	PathPrefix  string `toml:"path_prefix"`   // URL path prefix for S3 requests (not used in s3 mode)
 }
 
+// LoadConfig reads the TOML file at configPath, applies QUASAR_* environment
+// overrides and defaults, and validates the result so misconfiguration is
+// caught at startup instead of on the first request.
 func LoadConfig(configPath string) (*Config, error) {
 	var config Config
 
@@ -55,5 +64,69 @@ func LoadConfig(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("error decoding config file: %v", err)
 	}
 
+	if err := config.ApplyEnvOverrides(); err != nil {
+		return nil, err
+	}
+	config.ApplyDefaults()
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+
 	return &config, nil
+}
+
+// ApplyDefaults fills in defaults for values that were not set. It is
+// idempotent.
+func (c *Config) ApplyDefaults() {
+	if c.Server.Type == "" {
+		c.Server.Type = GatewayTypeRPC
+	}
+	if c.Server.Port == 0 {
+		c.Server.Port = 8080
+	}
+	if c.Server.HealthPort == 0 {
+		c.Server.HealthPort = c.Server.Port + 1
+	}
+	if c.Server.GracefulShutdownSec == 0 {
+		c.Server.GracefulShutdownSec = 30
+	}
+	if c.Auth.CacheExpiration == 0 {
+		c.Auth.CacheExpiration = 300
+	}
+	if c.Auth.HTTPTimeout == 0 {
+		c.Auth.HTTPTimeout = 5
+	}
+	if c.Auth.CacheSize == 0 {
+		c.Auth.CacheSize = 10000
+	}
+}
+
+// Validate reports configuration errors. It expects defaults to have been
+// applied already.
+func (c *Config) Validate() error {
+	switch c.Server.Type {
+	case GatewayTypeRPC:
+		if c.RPC.URL == "" {
+			return fmt.Errorf("rpc.url is required when server.type is %q", GatewayTypeRPC)
+		}
+	case GatewayTypeS3:
+		if c.S3.Bucket == "" {
+			return fmt.Errorf("s3.bucket is required when server.type is %q", GatewayTypeS3)
+		}
+		if c.S3.AccessKeyID == "" || c.S3.SecretKey == "" {
+			return fmt.Errorf("s3.access_key_id and s3.secret_key are required when server.type is %q", GatewayTypeS3)
+		}
+	default:
+		return fmt.Errorf("unsupported gateway type: %s (must be 'rpc' or 's3')", c.Server.Type)
+	}
+	if c.Auth.ServiceURL == "" {
+		return fmt.Errorf("auth.service_url is required")
+	}
+	if c.Server.Port < 1 || c.Server.Port > 65535 {
+		return fmt.Errorf("server.port must be between 1 and 65535, got %d", c.Server.Port)
+	}
+	if c.Server.HealthPort < 1 || c.Server.HealthPort > 65535 {
+		return fmt.Errorf("server.health_port must be between 1 and 65535, got %d", c.Server.HealthPort)
+	}
+	return nil
 }

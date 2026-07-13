@@ -215,43 +215,6 @@ func TestGateway_HandleS3_EmptyAPIKey(t *testing.T) {
 	assert.Contains(t, rr.Body.String(), "Empty API key")
 }
 
-func TestOverrideConfigFromEnv(t *testing.T) {
-	cfg := &config.Config{
-		Server: config.ServerConfig{
-			Host: "default-host",
-			Port: 8080,
-		},
-		RPC: config.RPCConfig{
-			URL: "http://default.com",
-		},
-		Auth: config.AuthConfig{
-			ServiceURL: "http://auth-default.com",
-		},
-	}
-
-	os.Setenv("QUASAR_SERVER_HOST", "env-host")
-	os.Setenv("QUASAR_SERVER_PORT", "9090")
-	os.Setenv("QUASAR_RPC_URL", "http://env-rpc.com")
-	os.Setenv("QUASAR_AUTH_SERVICE_URL", "http://env-auth.com")
-	os.Setenv("QUASAR_AUTH_FAIL_OPEN", "false")
-
-	defer func() {
-		os.Unsetenv("QUASAR_SERVER_HOST")
-		os.Unsetenv("QUASAR_SERVER_PORT")
-		os.Unsetenv("QUASAR_RPC_URL")
-		os.Unsetenv("QUASAR_AUTH_SERVICE_URL")
-		os.Unsetenv("QUASAR_AUTH_FAIL_OPEN")
-	}()
-
-	overrideConfigFromEnv(cfg)
-
-	assert.Equal(t, "env-host", cfg.Server.Host)
-	assert.Equal(t, 9090, cfg.Server.Port)
-	assert.Equal(t, "http://env-rpc.com", cfg.RPC.URL)
-	assert.Equal(t, "http://env-auth.com", cfg.Auth.ServiceURL)
-	assert.False(t, cfg.Auth.FailOpen)
-}
-
 func TestGetDefaultConfigPath(t *testing.T) {
 	os.Unsetenv("QUASAR_CONFIG_PATH")
 	path := getDefaultConfigPath()

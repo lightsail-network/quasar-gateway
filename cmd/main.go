@@ -35,11 +35,6 @@ func main() {
 	var configPath string
 	var showHelp bool
 
-	// Check for environment variable first
-	if envConfigPath := os.Getenv("QUASAR_CONFIG_PATH"); envConfigPath != "" {
-		configPath = envConfigPath
-	}
-
 	flag.StringVar(&configPath, "config", getDefaultConfigPath(), "Path to configuration file")
 	flag.BoolVar(&showHelp, "help", false, "Show help message")
 	flag.Parse()
@@ -49,13 +44,12 @@ func main() {
 		return
 	}
 
+	// LoadConfig also applies QUASAR_* environment overrides, defaults, and
+	// validation.
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-
-	// Override config values with environment variables if present
-	overrideConfigFromEnv(cfg)
 
 	gateway, err := NewGateway(cfg)
 	if err != nil {
@@ -72,81 +66,6 @@ func getDefaultConfigPath() string {
 		return envPath
 	}
 	return "config.toml"
-}
-
-func overrideConfigFromEnv(cfg *config.Config) {
-	// Server configuration
-	if host := os.Getenv("QUASAR_SERVER_HOST"); host != "" {
-		cfg.Server.Host = host
-	}
-	if port := os.Getenv("QUASAR_SERVER_PORT"); port != "" {
-		if p, err := fmt.Sscanf(port, "%d", &cfg.Server.Port); err == nil && p == 1 {
-			// Port parsed successfully
-		}
-	}
-	if healthPort := os.Getenv("QUASAR_SERVER_HEALTH_PORT"); healthPort != "" {
-		if hp, err := fmt.Sscanf(healthPort, "%d", &cfg.Server.HealthPort); err == nil && hp == 1 {
-			// Health port parsed successfully
-		}
-	}
-	if gracefulShutdown := os.Getenv("QUASAR_SERVER_GRACEFUL_SHUTDOWN_SEC"); gracefulShutdown != "" {
-		if gs, err := fmt.Sscanf(gracefulShutdown, "%d", &cfg.Server.GracefulShutdownSec); err == nil && gs == 1 {
-			// Graceful shutdown time parsed successfully
-		}
-	}
-
-	// Server type configuration
-	if serverType := os.Getenv("QUASAR_SERVER_TYPE"); serverType != "" {
-		cfg.Server.Type = serverType
-	}
-
-	// RPC configuration
-	if rpcURL := os.Getenv("QUASAR_RPC_URL"); rpcURL != "" {
-		cfg.RPC.URL = rpcURL
-	}
-
-	// S3 configuration
-	if s3Endpoint := os.Getenv("QUASAR_S3_ENDPOINT"); s3Endpoint != "" {
-		cfg.S3.Endpoint = s3Endpoint
-	}
-	if s3Region := os.Getenv("QUASAR_S3_REGION"); s3Region != "" {
-		cfg.S3.Region = s3Region
-	}
-	if s3Bucket := os.Getenv("QUASAR_S3_BUCKET"); s3Bucket != "" {
-		cfg.S3.Bucket = s3Bucket
-	}
-	if s3AccessKeyID := os.Getenv("QUASAR_S3_ACCESS_KEY_ID"); s3AccessKeyID != "" {
-		cfg.S3.AccessKeyID = s3AccessKeyID
-	}
-	if s3SecretKey := os.Getenv("QUASAR_S3_SECRET_KEY"); s3SecretKey != "" {
-		cfg.S3.SecretKey = s3SecretKey
-	}
-
-	// Auth configuration
-	if authURL := os.Getenv("QUASAR_AUTH_SERVICE_URL"); authURL != "" {
-		cfg.Auth.ServiceURL = authURL
-	}
-	if authToken := os.Getenv("QUASAR_AUTH_SERVICE_TOKEN"); authToken != "" {
-		cfg.Auth.ServiceToken = authToken
-	}
-	if cacheExp := os.Getenv("QUASAR_AUTH_CACHE_EXPIRATION"); cacheExp != "" {
-		if exp, err := fmt.Sscanf(cacheExp, "%d", &cfg.Auth.CacheExpiration); err == nil && exp == 1 {
-			// Cache expiration parsed successfully
-		}
-	}
-	if httpTimeout := os.Getenv("QUASAR_AUTH_HTTP_TIMEOUT"); httpTimeout != "" {
-		if timeout, err := fmt.Sscanf(httpTimeout, "%d", &cfg.Auth.HTTPTimeout); err == nil && timeout == 1 {
-			// HTTP timeout parsed successfully
-		}
-	}
-	if cacheSize := os.Getenv("QUASAR_AUTH_CACHE_SIZE"); cacheSize != "" {
-		if size, err := fmt.Sscanf(cacheSize, "%d", &cfg.Auth.CacheSize); err == nil && size == 1 {
-			// Cache size parsed successfully
-		}
-	}
-	if failOpen := os.Getenv("QUASAR_AUTH_FAIL_OPEN"); failOpen != "" {
-		cfg.Auth.FailOpen = failOpen == "true" || failOpen == "1"
-	}
 }
 
 func showUsage() {
@@ -169,24 +88,7 @@ func showUsage() {
 	fmt.Println("    Create a TOML configuration file with server, rpc, and auth sections.")
 	fmt.Println("    Configuration values can be overridden using environment variables:")
 	fmt.Println()
-	fmt.Println("    QUASAR_CONFIG_PATH         - Path to configuration file")
-	fmt.Println("    QUASAR_SERVER_HOST         - Server host (e.g., 0.0.0.0)")
-	fmt.Println("    QUASAR_SERVER_PORT         - Server port (e.g., 8080)")
-	fmt.Println("    QUASAR_SERVER_HEALTH_PORT  - Health check server port (e.g., 8081)")
-	fmt.Println("    QUASAR_SERVER_GRACEFUL_SHUTDOWN_SEC - Graceful shutdown wait time (e.g., 30)")
-	fmt.Println("    QUASAR_SERVER_TYPE         - Gateway type (rpc or s3)")
-	fmt.Println("    QUASAR_RPC_URL            - RPC server URL")
-	fmt.Println("    QUASAR_S3_ENDPOINT        - S3 endpoint URL")
-	fmt.Println("    QUASAR_S3_REGION          - S3 region")
-	fmt.Println("    QUASAR_S3_BUCKET          - S3 bucket name")
-	fmt.Println("    QUASAR_S3_ACCESS_KEY_ID   - S3 access key ID")
-	fmt.Println("    QUASAR_S3_SECRET_KEY      - S3 secret access key")
-	fmt.Println("    QUASAR_AUTH_SERVICE_URL   - Auth service URL")
-	fmt.Println("    QUASAR_AUTH_SERVICE_TOKEN - Auth service token")
-	fmt.Println("    QUASAR_AUTH_CACHE_EXPIRATION - Auth cache expiration (seconds)")
-	fmt.Println("    QUASAR_AUTH_HTTP_TIMEOUT  - Auth HTTP timeout (seconds)")
-	fmt.Println("    QUASAR_AUTH_CACHE_SIZE    - Auth cache size (max entries)")
-	fmt.Println("    QUASAR_AUTH_FAIL_OPEN     - Allow requests when auth service is down (default: false)")
+	fmt.Print(config.EnvUsage())
 	fmt.Println()
 	fmt.Println("    See README.md for detailed configuration options.")
 }
