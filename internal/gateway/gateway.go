@@ -94,9 +94,10 @@ func New(cfg *config.Config) (*Gateway, error) {
 		return nil, fmt.Errorf("unsupported gateway type: %s (must be 'rpc' or 's3')", cfg.Server.Type)
 	}
 
-	// Main server: every path goes through authentication to the backend.
+	// Main server: every path goes through CORS handling and authentication
+	// to the backend.
 	mux := http.NewServeMux()
-	mux.Handle("/", gateway.requireAPIKey(extractKey, gateway.backend))
+	mux.Handle("/", corsMiddleware(gateway.requireAPIKey(extractKey, gateway.backend)))
 
 	gateway.server = &http.Server{
 		Addr:        fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),

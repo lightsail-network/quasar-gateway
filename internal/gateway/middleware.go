@@ -6,6 +6,60 @@ import (
 	"strings"
 )
 
+// corsMiddleware terminates CORS preflight requests and stamps
+// Access-Control-Allow-Origin on every response. The gateway allows any
+// origin by design: access control is per API key, not per origin.
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Preflight requests terminate here: they never carry credentials,
+		// so they skip authentication and must never reach the backend.
+		if r.Method == http.MethodOptions {
+			h := w.Header()
+			h.Set("Access-Control-Allow-Origin", "*")
+			// Per the Fetch spec a wildcard does not cover Authorization,
+			// so it must be listed explicitly.
+			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			h.Set("Access-Control-Allow-Methods", "GET, POST, HEAD, OPTIONS")
+			h.Set("Access-Control-Max-Age", "86400")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(&corsResponseWriter{ResponseWriter: w}, r)
+	})
+}
+
+// corsResponseWriter sets Access-Control-Allow-Origin right before the
+// response header is written. This keeps error responses (401, 502, ...)
+// readable from browser scripts, and setting instead of adding means an
+// Allow-Origin header copied from the backend by the reverse proxy cannot
+// end up duplicated (browsers reject "*, *").
+type corsResponseWriter struct {
+	http.ResponseWriter
+	wroteHeader bool
+}
+
+func (w *corsResponseWriter) WriteHeader(statusCode int) {
+	if !w.wroteHeader {
+		w.wroteHeader = true
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+	}
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *corsResponseWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer, keeping
+// Flush and Hijack working for the reverse proxy.
+func (w *corsResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 // keyExtractor pulls the client API key out of a request. It returns the key,
 // or a client-facing message describing why no key could be found.
 type keyExtractor func(r *http.Request) (apiKey string, errMsg string)
@@ -41,15 +95,10 @@ func bearerToken(r *http.Request, missingMsg string) (string, string) {
 	return apiKey, ""
 }
 
-// requireAPIKey wraps next with API key authentication.
+// requireAPIKey wraps next with API key authentication. CORS preflight
+// requests never get here: corsMiddleware terminates them.
 func (g *Gateway) requireAPIKey(extract keyExtractor, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip authentication for CORS preflight requests
-		if r.Method == http.MethodOptions {
-			next.ServeHTTP(w, r)
-			return
-		}
-
 		apiKey, errMsg := extract(r)
 		if errMsg != "" {
 			http.Error(w, errMsg, http.StatusUnauthorized)

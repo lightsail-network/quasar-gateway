@@ -377,32 +377,72 @@ func TestGateway_HandleRPC_FallbackToHeader(t *testing.T) {
 	assert.Equal(t, "/api/method", req.URL.Path)
 }
 
-// RPC Gateway OPTIONS Tests
-func TestGateway_HandleRPC_OPTIONS_SkipAuth(t *testing.T) {
+// CORS preflight requests terminate at the gateway in both modes: no
+// authentication, no backend involved.
+func TestGateway_OPTIONS_Preflight(t *testing.T) {
+	for _, serverType := range []string{"rpc", "s3"} {
+		t.Run(serverType, func(t *testing.T) {
+			cfg := createTestConfig(serverType)
+			gateway, err := New(cfg)
+			require.NoError(t, err)
+
+			req := httptest.NewRequest("OPTIONS", "/some/path", nil)
+			req.Header.Set("Origin", "https://example.com")
+			rr := serve(gateway, req)
+
+			assert.Equal(t, http.StatusNoContent, rr.Code)
+			assert.Equal(t, "*", rr.Header().Get("Access-Control-Allow-Origin"))
+			// Authorization is not covered by a wildcard, so it must be listed.
+			assert.Contains(t, rr.Header().Get("Access-Control-Allow-Headers"), "Authorization")
+			assert.Equal(t, "GET, POST, HEAD, OPTIONS", rr.Header().Get("Access-Control-Allow-Methods"))
+			assert.Equal(t, "86400", rr.Header().Get("Access-Control-Max-Age"))
+			assert.Empty(t, rr.Body.String())
+		})
+	}
+}
+
+// Error responses must carry Access-Control-Allow-Origin too, otherwise
+// browser scripts cannot read them at all.
+func TestGateway_CORSHeaderOnErrorResponse(t *testing.T) {
 	cfg := createTestConfig("rpc")
 	gateway, err := New(cfg)
 	require.NoError(t, err)
 
-	req := httptest.NewRequest("OPTIONS", "/api/method", nil)
+	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"test": "data"}`))
 	rr := serve(gateway, req)
 
-	// OPTIONS requests should skip authentication and go to RPC handler
-	// Since we don't have a real RPC server, this may fail but won't be a 401
-	assert.NotEqual(t, http.StatusUnauthorized, rr.Code)
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	assert.Equal(t, "*", rr.Header().Get("Access-Control-Allow-Origin"))
 }
 
-// S3 Gateway OPTIONS Tests
-func TestGateway_HandleS3_OPTIONS_SkipAuth(t *testing.T) {
-	cfg := createTestConfig("s3")
+// A backend that sets its own Allow-Origin header must not lead to a
+// duplicated value ("*, *"), which browsers reject.
+func TestGateway_CORSHeaderNotDuplicatedFromBackend(t *testing.T) {
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(auth.AuthResponse{Valid: true})
+	}))
+	defer authServer.Close()
+
+	rpcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"result": "success"}`)
+	}))
+	defer rpcServer.Close()
+
+	cfg := createTestConfig("rpc")
+	cfg.RPC.URL = rpcServer.URL
+	cfg.Auth.ServiceURL = authServer.URL
+
 	gateway, err := New(cfg)
 	require.NoError(t, err)
 
-	req := httptest.NewRequest("OPTIONS", "/test-file.txt", nil)
+	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"method": "test"}`))
+	req.Header.Set("Authorization", "Bearer some-key")
 	rr := serve(gateway, req)
 
-	// OPTIONS requests should skip authentication and go to S3 handler
-	// Since we don't have a real S3 server, this may fail but won't be a 401
-	assert.NotEqual(t, http.StatusUnauthorized, rr.Code)
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, []string{"*"}, rr.Header().Values("Access-Control-Allow-Origin"))
 }
 
 func TestGateway_HandleRPC_URLToken_Integration(t *testing.T) {
