@@ -15,8 +15,10 @@ cp config_example.toml config.toml
 nano config.toml
 
 # Run
-./bin/gateway -c config.toml
+./bin/gateway --config config.toml
 ```
+
+The config is validated at startup: missing required values (e.g. `rpc.url`, `auth.service_url`) or unparseable `QUASAR_*` environment variables cause the gateway to exit with an error instead of failing on the first request.
 
 ### Environment Variables
 
@@ -50,6 +52,8 @@ nano config.toml
 - **Authentication**: 
   - Header: `Authorization: Bearer <api-key>`
   - URL (RPC only): `/:8080/<api-key>` (token in path, path rewritten to root)
+- **CORS**: handled by the gateway itself — `OPTIONS` preflight requests are answered with `204` and skip authentication; all responses carry `Access-Control-Allow-Origin: *`
+- **S3 mode**: only `GET`/`HEAD` are allowed; `Range`, `If-None-Match`, and `If-Modified-Since` headers are passed through, so resumable downloads (206) and cache revalidation (304) work
 
 ### Health Check
 
@@ -107,3 +111,9 @@ Content-Type: application/json
   "valid": true
 }
 ```
+
+## Operational Notes
+
+- `fail_open = true` only covers the auth service being **unreachable or broken** (network errors, 5xx). An explicit 4xx rejection from the auth service always results in 401, regardless of `fail_open`.
+- Validation results are cached for `cache_expiration` seconds (default 300), so revoking an API key can take up to that long to take effect.
+- With URL token authentication the API key appears in the request path — make sure access logs of any proxy in front (e.g. Caddy) are protected or masked accordingly.
