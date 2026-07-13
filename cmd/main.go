@@ -293,11 +293,18 @@ func NewGateway(cfg *config.Config) (*Gateway, error) {
 	}
 
 	gateway.server = &http.Server{
-		Addr:         fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
-		Handler:      mux,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:        fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
+		Handler:     mux,
+		ReadTimeout: 30 * time.Second,
+		IdleTimeout: 60 * time.Second,
+	}
+	if gatewayType == "rpc" {
+		// JSON-RPC exchanges are short-lived, so a write deadline is safe.
+		// S3 mode streams arbitrarily large objects: WriteTimeout is measured
+		// from the start of the request, so any fixed value would cut off
+		// large or slow downloads mid-body. Rely on the client/LB timeouts
+		// there instead.
+		gateway.server.WriteTimeout = 30 * time.Second
 	}
 
 	// Health server (separate port)

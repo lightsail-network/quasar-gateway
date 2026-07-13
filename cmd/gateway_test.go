@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"quasar-gateway/config"
 	"quasar-gateway/internal/auth"
@@ -58,6 +59,7 @@ func TestNewGateway_RPC(t *testing.T) {
 	assert.NotNil(t, gateway.healthChecker)
 	assert.Nil(t, gateway.s3Proxy)
 	assert.True(t, gateway.isHealthy.Load())
+	assert.Equal(t, 30*time.Second, gateway.server.WriteTimeout)
 }
 
 func TestNewGateway_S3(t *testing.T) {
@@ -72,6 +74,8 @@ func TestNewGateway_S3(t *testing.T) {
 	assert.NotNil(t, gateway.healthChecker)
 	assert.Nil(t, gateway.rpcProxy)
 	assert.True(t, gateway.isHealthy.Load())
+	// No write deadline in S3 mode: large downloads must not be cut off.
+	assert.Zero(t, gateway.server.WriteTimeout)
 }
 
 func TestNewGateway_UnsupportedType(t *testing.T) {
