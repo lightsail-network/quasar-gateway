@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -90,34 +91,20 @@ func (sp *S3Proxy) handleGetObject(w http.ResponseWriter, ctx context.Context, o
 	}
 	defer result.Body.Close()
 
-	// Set response headers
-	if result.ContentType != nil {
-		w.Header().Set("Content-Type", *result.ContentType)
-	}
-	if result.ContentLength != nil {
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", *result.ContentLength))
-	}
-	if result.ETag != nil {
-		w.Header().Set("ETag", *result.ETag)
-	}
-	if result.LastModified != nil {
-		w.Header().Set("Last-Modified", result.LastModified.Format(http.TimeFormat))
-	}
-	if result.CacheControl != nil {
-		w.Header().Set("Cache-Control", *result.CacheControl)
-	}
-	if result.ContentEncoding != nil {
-		w.Header().Set("Content-Encoding", *result.ContentEncoding)
-	}
-	if result.ContentDisposition != nil {
-		w.Header().Set("Content-Disposition", *result.ContentDisposition)
-	}
+	writeObjectHeaders(w.Header(), objectHeaders{
+		contentType:        result.ContentType,
+		contentLength:      result.ContentLength,
+		etag:               result.ETag,
+		lastModified:       result.LastModified,
+		cacheControl:       result.CacheControl,
+		contentEncoding:    result.ContentEncoding,
+		contentDisposition: result.ContentDisposition,
+	})
 
 	// Copy object data to response
-	_, err = io.Copy(w, result.Body)
-	if err != nil {
+	if _, err := io.Copy(w, result.Body); err != nil {
 		// Log error but don't send response as headers are already written
-		fmt.Printf("Error copying object data: %v\n", err)
+		log.Printf("Error copying object data: %v", err)
 	}
 }
 
@@ -133,30 +120,53 @@ func (sp *S3Proxy) handleHeadObject(w http.ResponseWriter, ctx context.Context, 
 		return
 	}
 
-	// Set response headers
-	if result.ContentType != nil {
-		w.Header().Set("Content-Type", *result.ContentType)
-	}
-	if result.ContentLength != nil {
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", *result.ContentLength))
-	}
-	if result.ETag != nil {
-		w.Header().Set("ETag", *result.ETag)
-	}
-	if result.LastModified != nil {
-		w.Header().Set("Last-Modified", result.LastModified.Format(http.TimeFormat))
-	}
-	if result.CacheControl != nil {
-		w.Header().Set("Cache-Control", *result.CacheControl)
-	}
-	if result.ContentEncoding != nil {
-		w.Header().Set("Content-Encoding", *result.ContentEncoding)
-	}
-	if result.ContentDisposition != nil {
-		w.Header().Set("Content-Disposition", *result.ContentDisposition)
-	}
+	writeObjectHeaders(w.Header(), objectHeaders{
+		contentType:        result.ContentType,
+		contentLength:      result.ContentLength,
+		etag:               result.ETag,
+		lastModified:       result.LastModified,
+		cacheControl:       result.CacheControl,
+		contentEncoding:    result.ContentEncoding,
+		contentDisposition: result.ContentDisposition,
+	})
 
 	w.WriteHeader(http.StatusOK)
+}
+
+// objectHeaders carries the object metadata shared by GetObject and
+// HeadObject responses.
+type objectHeaders struct {
+	contentType        *string
+	contentLength      *int64
+	etag               *string
+	lastModified       *time.Time
+	cacheControl       *string
+	contentEncoding    *string
+	contentDisposition *string
+}
+
+func writeObjectHeaders(h http.Header, o objectHeaders) {
+	if o.contentType != nil {
+		h.Set("Content-Type", *o.contentType)
+	}
+	if o.contentLength != nil {
+		h.Set("Content-Length", fmt.Sprintf("%d", *o.contentLength))
+	}
+	if o.etag != nil {
+		h.Set("ETag", *o.etag)
+	}
+	if o.lastModified != nil {
+		h.Set("Last-Modified", o.lastModified.Format(http.TimeFormat))
+	}
+	if o.cacheControl != nil {
+		h.Set("Cache-Control", *o.cacheControl)
+	}
+	if o.contentEncoding != nil {
+		h.Set("Content-Encoding", *o.contentEncoding)
+	}
+	if o.contentDisposition != nil {
+		h.Set("Content-Disposition", *o.contentDisposition)
+	}
 }
 
 func (sp *S3Proxy) handleS3Error(w http.ResponseWriter, err error) {
@@ -175,7 +185,7 @@ func (sp *S3Proxy) handleS3Error(w http.ResponseWriter, err error) {
 	}
 
 	// Generic error
-	fmt.Printf("S3 error: %v\n", err)
+	log.Printf("S3 error: %v", err)
 	http.Error(w, "Internal server error", http.StatusInternalServerError)
 }
 
