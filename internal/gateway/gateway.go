@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -45,13 +45,11 @@ func New(cfg *config.Config) (*Gateway, error) {
 		FailOpen:         cfg.Auth.FailOpen,
 	}
 
-	log.Printf("Auth service URL: %s", authConfig.AuthServiceURL)
-	log.Printf("Auth cache: size=%d, expiration=%v", authConfig.CacheSize, authConfig.CacheExpiration)
-	if authConfig.FailOpen {
-		log.Printf("Auth requests that fail will be allowed to pass through (fail_open=true)")
-	} else {
-		log.Printf("Auth requests that fail will be rejected (fail_open=false)")
-	}
+	slog.Info("authenticator configured",
+		"auth_service_url", authConfig.AuthServiceURL,
+		"cache_size", authConfig.CacheSize,
+		"cache_expiration", authConfig.CacheExpiration,
+		"fail_open", authConfig.FailOpen)
 
 	authenticator, err := auth.NewAuthenticatorWithConfig(authConfig)
 	if err != nil {
@@ -64,7 +62,7 @@ func New(cfg *config.Config) (*Gateway, error) {
 	}
 	gateway.isHealthy.Store(true) // Start as healthy
 
-	log.Printf("Gateway type: %s", cfg.Server.Type)
+	slog.Info("gateway type", "type", cfg.Server.Type)
 
 	var extractKey keyExtractor
 	switch cfg.Server.Type {
@@ -76,7 +74,7 @@ func New(cfg *config.Config) (*Gateway, error) {
 		gateway.backend = proxy
 		gateway.healthChecker = rpc.NewRPCHealthChecker(cfg.RPC.URL)
 		extractKey = pathOrHeaderKey
-		log.Printf("RPC proxy configured: %s", cfg.RPC.URL)
+		slog.Info("RPC proxy configured", "url", cfg.RPC.URL)
 
 	case config.GatewayTypeS3:
 		proxy := s3.NewS3Proxy(s3.S3Config{
@@ -89,7 +87,7 @@ func New(cfg *config.Config) (*Gateway, error) {
 		gateway.backend = proxy
 		gateway.healthChecker = proxy
 		extractKey = headerKey
-		log.Printf("S3 proxy configured: bucket=%s, endpoint=%s, region=%s", cfg.S3.Bucket, cfg.S3.Endpoint, cfg.S3.Region)
+		slog.Info("S3 proxy configured", "bucket", cfg.S3.Bucket, "endpoint", cfg.S3.Endpoint, "region", cfg.S3.Region)
 
 	default:
 		return nil, fmt.Errorf("unsupported gateway type: %s (must be 'rpc' or 's3')", cfg.Server.Type)
@@ -142,7 +140,7 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	if err := g.healthChecker.CheckHealth(ctx); err != nil {
-		log.Printf("Health check failed: %v", err)
+		slog.Warn("health check failed", "error", err)
 		writeHealthResponse(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
@@ -162,20 +160,22 @@ func writeHealthResponse(w http.ResponseWriter, statusCode int, reason string) {
 // Start runs both servers until SIGINT/SIGTERM, then drains traffic and shuts
 // down gracefully.
 func (g *Gateway) Start() error {
-	log.Printf("Starting gateway server on %s", g.server.Addr)
-	log.Printf("Starting health server on %s", g.healthServer.Addr)
+	slog.Info("starting gateway server", "addr", g.server.Addr)
+	slog.Info("starting health server", "addr", g.healthServer.Addr)
 
 	// Start main server
 	go func() {
 		if err := g.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Gateway server failed to start: %v", err)
+			slog.Error("gateway server failed", "error", err)
+			os.Exit(1)
 		}
 	}()
 
 	// Start health server
 	go func() {
 		if err := g.healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Health server failed to start: %v", err)
+			slog.Error("health server failed", "error", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -183,19 +183,19 @@ func (g *Gateway) Start() error {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("Shutdown signal received, starting graceful shutdown...")
+	slog.Info("shutdown signal received, starting graceful shutdown")
 
 	// Mark service as unhealthy to prevent new traffic
 	g.isHealthy.Store(false)
-	log.Println("Health check marked as unhealthy, load balancer will stop sending traffic")
+	slog.Info("health check marked unhealthy, load balancer will stop sending traffic")
 
 	// Wait for configured time to allow existing requests to complete
 	gracefulWait := time.Duration(g.config.Server.GracefulShutdownSec) * time.Second
 
-	log.Printf("Waiting %v for existing requests to complete...", gracefulWait)
+	slog.Info("waiting for existing requests to complete", "wait", gracefulWait)
 	time.Sleep(gracefulWait)
 
-	log.Println("Starting server shutdown...")
+	slog.Info("starting server shutdown")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -203,21 +203,21 @@ func (g *Gateway) Start() error {
 	// Shutdown both servers
 	var shutdownErr error
 	if err := g.server.Shutdown(ctx); err != nil {
-		log.Printf("Gateway server forced to shutdown: %v", err)
+		slog.Error("gateway server forced to shutdown", "error", err)
 		shutdownErr = err
 	}
 
 	if err := g.healthServer.Shutdown(ctx); err != nil {
-		log.Printf("Health server forced to shutdown: %v", err)
+		slog.Error("health server forced to shutdown", "error", err)
 		if shutdownErr == nil {
 			shutdownErr = err
 		}
 	}
 
 	if err := g.authenticator.Close(); err != nil {
-		log.Printf("Failed to close authenticator: %v", err)
+		slog.Error("failed to close authenticator", "error", err)
 	}
 
-	log.Println("Servers exited")
+	slog.Info("servers exited")
 	return shutdownErr
 }

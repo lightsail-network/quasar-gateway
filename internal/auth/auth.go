@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -121,16 +121,16 @@ func (a *Authenticator) ValidateAPIKey(ctx context.Context, apiKey string) (bool
 		if errors.Is(err, errAuthRejected) {
 			// The auth service is up and explicitly rejected the request,
 			// so fail-open does not apply.
-			log.Printf("Auth service rejected request: %v", err)
+			slog.Warn("auth service rejected request", "error", err)
 			return false, nil
 		}
 		if a.failOpen {
 			// Auth service call failed, allow the request to pass through
-			log.Printf("Auth service call failed, allowing request to pass (fail_open=true): %v", err)
+			slog.Warn("auth service call failed, allowing request to pass", "fail_open", true, "error", err)
 			return true, nil
 		}
 		// Auth service call failed, reject the request
-		log.Printf("Auth service call failed, rejecting request (fail_open=false): %v", err)
+		slog.Warn("auth service call failed, rejecting request", "fail_open", false, "error", err)
 		return false, err
 	}
 

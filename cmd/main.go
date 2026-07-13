@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 
 	"quasar-gateway/config"
@@ -27,16 +27,19 @@ func main() {
 	// validation.
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		slog.Error("failed to load config", "error", err)
+		os.Exit(1)
 	}
 
 	gw, err := gateway.New(cfg)
 	if err != nil {
-		log.Fatalf("Failed to create gateway: %v", err)
+		slog.Error("failed to create gateway", "error", err)
+		os.Exit(1)
 	}
 
 	if err := gw.Start(); err != nil {
-		log.Fatalf("Failed to start gateway: %v", err)
+		slog.Error("gateway exited with error", "error", err)
+		os.Exit(1)
 	}
 }
 

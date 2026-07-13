@@ -1,7 +1,7 @@
 package gateway
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -107,7 +107,7 @@ func (g *Gateway) requireAPIKey(extract keyExtractor, next http.Handler) http.Ha
 
 		isAuthenticated, err := g.authenticator.ValidateAPIKey(r.Context(), apiKey)
 		if err != nil {
-			log.Printf("Authentication error: %v", err)
+			slog.Error("authentication error", "error", err)
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			return
 		}

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -127,7 +127,7 @@ func (sp *S3Proxy) handleGetObject(w http.ResponseWriter, req *http.Request, obj
 	// Copy object data to response
 	if _, err := io.Copy(w, result.Body); err != nil {
 		// Log error but don't send response as headers are already written
-		log.Printf("Error copying object data: %v", err)
+		slog.Error("error copying object data", "error", err)
 	}
 }
 
@@ -235,7 +235,7 @@ func (sp *S3Proxy) handleS3Error(w http.ResponseWriter, err error) {
 	}
 
 	// Generic error
-	log.Printf("S3 error: %v", err)
+	slog.Error("S3 error", "error", err)
 	http.Error(w, "Internal server error", http.StatusInternalServerError)
 }
 
