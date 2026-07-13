@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -29,6 +30,11 @@ type AuthResponse struct {
 	Valid bool `json:"valid"`
 }
 
+// errAuthRejected marks responses where the auth service explicitly rejected
+// the request (4xx status). The fail-open policy only covers the service
+// being unreachable or broken, so it must never apply to these.
+var errAuthRejected = errors.New("auth service rejected the request")
+
 type Authenticator struct {
 	authServiceURL   string
 	authServiceToken string
@@ -45,7 +51,7 @@ type AuthenticatorConfig struct {
 	CacheExpiration  time.Duration
 	HTTPTimeout      time.Duration
 	CacheSize        int  // Maximum number of entries in cache (default: 10000)
-	FailOpen         bool // Allow requests when auth service is down (default: true)
+	FailOpen         bool // Allow requests when auth service is down (default: false)
 }
 
 func NewAuthenticator(authServiceURL, authServiceToken string) (*Authenticator, error) {
@@ -118,6 +124,12 @@ func (a *Authenticator) ValidateAPIKey(ctx context.Context, apiKey string) (bool
 	// Try to validate with HTTP
 	valid, err := a.validateWithHTTP(ctx, apiKey)
 	if err != nil {
+		if errors.Is(err, errAuthRejected) {
+			// The auth service is up and explicitly rejected the request,
+			// so fail-open does not apply.
+			log.Printf("Auth service rejected request: %v", err)
+			return false, nil
+		}
 		if a.failOpen {
 			// Auth service call failed, allow the request to pass through
 			log.Printf("Auth service call failed, allowing request to pass (fail_open=true): %v", err)
@@ -174,6 +186,9 @@ func (a *Authenticator) validateWithHTTP(ctx context.Context, apiKey string) (bo
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		return false, fmt.Errorf("%w: status %d", errAuthRejected, resp.StatusCode)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return false, fmt.Errorf("auth service returned status %d", resp.StatusCode)
 	}

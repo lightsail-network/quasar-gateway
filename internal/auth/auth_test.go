@@ -135,6 +135,43 @@ func TestValidateAPIKey_ServerError_FailOpen(t *testing.T) {
 	assert.True(t, valid)
 }
 
+func TestValidateAPIKey_Rejected_FailOpen(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	config := AuthenticatorConfig{
+		AuthServiceURL:   server.URL,
+		AuthServiceToken: "test-token",
+		FailOpen:         true,
+	}
+	auth, err := NewAuthenticatorWithConfig(config)
+	require.NoError(t, err)
+
+	// An explicit 4xx rejection from the auth service must not be treated
+	// as "service down": fail-open does not apply and the key is invalid.
+	valid, err := auth.ValidateAPIKey(context.Background(), "test-key")
+	require.NoError(t, err)
+	assert.False(t, valid)
+}
+
+func TestValidateAPIKey_Rejected_FailClosed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	auth, err := NewAuthenticator(server.URL, "test-token")
+	require.NoError(t, err)
+
+	// An explicit rejection is a normal "invalid key" outcome, not an
+	// internal error, so no error is returned to the caller.
+	valid, err := auth.ValidateAPIKey(context.Background(), "test-key")
+	require.NoError(t, err)
+	assert.False(t, valid)
+}
+
 func TestValidateAPIKey_Caching(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -32,7 +32,7 @@ type AuthConfig struct {
 	CacheExpiration int    `toml:"cache_expiration"` // seconds (default 300 = 5 minutes)
 	HTTPTimeout     int    `toml:"http_timeout"`     // seconds (default 5)
 	CacheSize       int    `toml:"cache_size"`       // max entries in cache (default 10000)
-	FailOpen        bool   `toml:"fail_open"`        // Allow requests when auth service is down (default true)
+	FailOpen        bool   `toml:"fail_open"`        // Allow requests when auth service is down (default false)
 }
 
 type S3Config struct {
