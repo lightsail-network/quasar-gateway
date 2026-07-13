@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -281,11 +282,9 @@ func TestRPCHealthChecker_CheckHealth_Healthy(t *testing.T) {
 	defer server.Close()
 
 	checker := NewRPCHealthChecker(server.URL)
-	statusCode, body, err := checker.CheckHealth()
+	err := checker.CheckHealth(context.Background())
 
 	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, statusCode)
-	assert.JSONEq(t, `{"status":"healthy"}`, string(body))
 }
 
 func TestRPCHealthChecker_CheckHealth_Unhealthy(t *testing.T) {
@@ -301,11 +300,10 @@ func TestRPCHealthChecker_CheckHealth_Unhealthy(t *testing.T) {
 	defer server.Close()
 
 	checker := NewRPCHealthChecker(server.URL)
-	statusCode, body, err := checker.CheckHealth()
+	err := checker.CheckHealth(context.Background())
 
 	require.Error(t, err)
-	assert.Equal(t, http.StatusServiceUnavailable, statusCode)
-	assert.Contains(t, string(body), "service not healthy")
+	assert.Contains(t, err.Error(), "not healthy")
 }
 
 func TestRPCHealthChecker_CheckHealth_RPCError(t *testing.T) {
@@ -324,12 +322,10 @@ func TestRPCHealthChecker_CheckHealth_RPCError(t *testing.T) {
 	defer server.Close()
 
 	checker := NewRPCHealthChecker(server.URL)
-	statusCode, body, err := checker.CheckHealth()
+	err := checker.CheckHealth(context.Background())
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Method not found")
-	assert.Equal(t, http.StatusServiceUnavailable, statusCode)
-	assert.Contains(t, string(body), "RPC error")
 }
 
 func TestRPCHealthChecker_CheckHealth_ServerError(t *testing.T) {
@@ -339,22 +335,18 @@ func TestRPCHealthChecker_CheckHealth_ServerError(t *testing.T) {
 	defer server.Close()
 
 	checker := NewRPCHealthChecker(server.URL)
-	statusCode, body, err := checker.CheckHealth()
+	err := checker.CheckHealth(context.Background())
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "RPC server returned status: 500")
-	assert.Equal(t, http.StatusServiceUnavailable, statusCode)
-	assert.Contains(t, string(body), "RPC server error")
 }
 
 func TestRPCHealthChecker_CheckHealth_NetworkError(t *testing.T) {
 	checker := NewRPCHealthChecker("http://nonexistent.example.com:9999")
-	statusCode, body, err := checker.CheckHealth()
+	err := checker.CheckHealth(context.Background())
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to make request to RPC server")
-	assert.Equal(t, http.StatusServiceUnavailable, statusCode)
-	assert.Contains(t, string(body), "RPC server unreachable")
+	assert.Contains(t, err.Error(), "RPC server unreachable")
 }
 
 func TestRPCHealthChecker_CheckHealth_InvalidJSON(t *testing.T) {
@@ -364,12 +356,10 @@ func TestRPCHealthChecker_CheckHealth_InvalidJSON(t *testing.T) {
 	defer server.Close()
 
 	checker := NewRPCHealthChecker(server.URL)
-	statusCode, body, err := checker.CheckHealth()
+	err := checker.CheckHealth(context.Background())
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to unmarshal JSON-RPC response")
-	assert.Equal(t, http.StatusServiceUnavailable, statusCode)
-	assert.Contains(t, string(body), "invalid RPC response")
 }
 
 func TestRPCHealthChecker_CheckHealth_MissingStatus(t *testing.T) {
@@ -385,16 +375,8 @@ func TestRPCHealthChecker_CheckHealth_MissingStatus(t *testing.T) {
 	defer server.Close()
 
 	checker := NewRPCHealthChecker(server.URL)
-	statusCode, body, err := checker.CheckHealth()
+	err := checker.CheckHealth(context.Background())
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "service is not healthy")
-	assert.Equal(t, http.StatusServiceUnavailable, statusCode)
-	assert.Contains(t, string(body), "service not healthy")
-}
-
-func TestCreateUnhealthyResponse(t *testing.T) {
-	response := createUnhealthyResponse("test reason")
-	expected := `{"status":"unhealthy","reason":"test reason"}`
-	assert.JSONEq(t, expected, string(response))
 }

@@ -240,10 +240,7 @@ func (sp *S3Proxy) handleS3Error(w http.ResponseWriter, err error) {
 }
 
 // CheckHealth performs a health check by listing objects in the bucket (with limit 1)
-func (sp *S3Proxy) CheckHealth() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
+func (sp *S3Proxy) CheckHealth(ctx context.Context) error {
 	input := &s3.ListObjectsV2Input{
 		Bucket:  aws.String(sp.bucket),
 		MaxKeys: aws.Int32(1),

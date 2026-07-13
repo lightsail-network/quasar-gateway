@@ -1,6 +1,10 @@
 package health
 
-// HealthChecker interface defines the contract for health checking
+import "context"
+
+// HealthChecker reports whether the backend behind the gateway is healthy.
+// Implementations return nil when healthy; the HTTP status code and response
+// body are the gateway's responsibility.
 type HealthChecker interface {
-	CheckHealth() (int, []byte, error)
+	CheckHealth(ctx context.Context) error
 }

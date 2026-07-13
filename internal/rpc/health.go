@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -43,12 +44,9 @@ func NewRPCHealthChecker(rpcURL string) *RPCHealthChecker {
 	}
 }
 
-func createUnhealthyResponse(reason string) []byte {
-	response := fmt.Sprintf(`{"status":"unhealthy","reason":"%s"}`, reason)
-	return []byte(response)
-}
-
-func (h *RPCHealthChecker) CheckHealth() (int, []byte, error) {
+// CheckHealth calls the backend's getHealth method and returns nil when the
+// backend reports itself healthy.
+func (h *RPCHealthChecker) CheckHealth(ctx context.Context) error {
 	request := JSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      0,
@@ -57,49 +55,42 @@ func (h *RPCHealthChecker) CheckHealth() (int, []byte, error) {
 
 	jsonData, err := json.Marshal(request)
 	if err != nil {
-		return http.StatusServiceUnavailable, createUnhealthyResponse("failed to marshal request"), fmt.Errorf("failed to marshal JSON-RPC request: %v", err)
+		return fmt.Errorf("failed to marshal JSON-RPC request: %v", err)
 	}
 
-	req, err := http.NewRequest("POST", h.rpcURL, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "POST", h.rpcURL, bytes.NewBuffer(jsonData))
 	if err != nil {
-		return http.StatusServiceUnavailable, createUnhealthyResponse("failed to create request"), fmt.Errorf("failed to create HTTP request: %v", err)
+		return fmt.Errorf("failed to create HTTP request: %v", err)
 	}
-
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
-		return http.StatusServiceUnavailable, createUnhealthyResponse("RPC server unreachable"), fmt.Errorf("failed to make request to RPC server: %v", err)
+		return fmt.Errorf("RPC server unreachable: %v", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return http.StatusServiceUnavailable, createUnhealthyResponse("failed to read response"), fmt.Errorf("failed to read response body: %v", err)
+		return fmt.Errorf("failed to read response body: %v", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return http.StatusServiceUnavailable, createUnhealthyResponse("RPC server error"), fmt.Errorf("RPC server returned status: %d", resp.StatusCode)
+		return fmt.Errorf("RPC server returned status: %d", resp.StatusCode)
 	}
 
 	var rpcResponse JSONRPCResponse
 	if err := json.Unmarshal(body, &rpcResponse); err != nil {
-		return http.StatusServiceUnavailable, createUnhealthyResponse("invalid RPC response"), fmt.Errorf("failed to unmarshal JSON-RPC response: %v", err)
+		return fmt.Errorf("failed to unmarshal JSON-RPC response: %v", err)
 	}
 
 	if rpcResponse.Error != nil {
-		return http.StatusServiceUnavailable, createUnhealthyResponse("RPC error"), fmt.Errorf("RPC error: %s", rpcResponse.Error.Message)
+		return fmt.Errorf("RPC error: %s", rpcResponse.Error.Message)
 	}
 
-	if status, ok := rpcResponse.Result["status"].(string); ok && status == "healthy" {
-		// Return simple status response instead of full RPC response
-		simpleResponse := map[string]string{"status": "healthy"}
-		simpleBody, err := json.Marshal(simpleResponse)
-		if err != nil {
-			return http.StatusServiceUnavailable, createUnhealthyResponse("failed to marshal response"), fmt.Errorf("failed to marshal simple response: %v", err)
-		}
-		return http.StatusOK, simpleBody, nil
+	if status, ok := rpcResponse.Result["status"].(string); !ok || status != "healthy" {
+		return fmt.Errorf("service is not healthy")
 	}
 
-	return http.StatusServiceUnavailable, createUnhealthyResponse("service not healthy"), fmt.Errorf("service is not healthy")
+	return nil
 }

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -86,7 +87,7 @@ func New(cfg *config.Config) (*Gateway, error) {
 			SecretKey:   cfg.S3.SecretKey,
 		})
 		gateway.backend = proxy
-		gateway.healthChecker = s3.NewS3HealthChecker(proxy)
+		gateway.healthChecker = proxy
 		extractKey = headerKey
 		log.Printf("S3 proxy configured: bucket=%s, endpoint=%s, region=%s", cfg.S3.Bucket, cfg.S3.Endpoint, cfg.S3.Region)
 
@@ -130,24 +131,32 @@ func New(cfg *config.Config) (*Gateway, error) {
 }
 
 func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
-	// Check if service is marked as unhealthy (shutting down)
+	// While shutting down, report unhealthy so the load balancer drains
+	// traffic away from this instance.
 	if !g.isHealthy.Load() {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte(`{"status":"unhealthy","reason":"service shutting down"}`))
+		writeHealthResponse(w, http.StatusServiceUnavailable, "service shutting down")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
 
-	statusCode, body, err := g.healthChecker.CheckHealth()
-	if err != nil {
+	if err := g.healthChecker.CheckHealth(ctx); err != nil {
 		log.Printf("Health check failed: %v", err)
+		writeHealthResponse(w, http.StatusServiceUnavailable, err.Error())
+		return
 	}
+	writeHealthResponse(w, http.StatusOK, "")
+}
+
+func writeHealthResponse(w http.ResponseWriter, statusCode int, reason string) {
+	resp := map[string]string{"status": "healthy"}
+	if statusCode != http.StatusOK {
+		resp = map[string]string{"status": "unhealthy", "reason": reason}
+	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	if body != nil {
-		w.Write(body)
-	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 // Start runs both servers until SIGINT/SIGTERM, then drains traffic and shuts

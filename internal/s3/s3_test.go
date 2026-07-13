@@ -1,6 +1,7 @@
 package s3
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -145,15 +146,7 @@ func TestHandleS3Error_GenericServerError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rr.Code)
 }
 
-func TestNewS3HealthChecker(t *testing.T) {
-	proxy := &S3Proxy{bucket: "test"}
-	checker := NewS3HealthChecker(proxy)
-
-	assert.NotNil(t, checker)
-	assert.Equal(t, proxy, checker.s3Proxy)
-}
-
-func TestS3HealthChecker_CheckHealth_WithoutRealS3(t *testing.T) {
+func TestS3Proxy_CheckHealth_WithoutRealS3(t *testing.T) {
 	config := S3Config{
 		Endpoint:    "https://nonexistent-bucket.s3.amazonaws.com",
 		Region:      "us-east-1",
@@ -162,13 +155,10 @@ func TestS3HealthChecker_CheckHealth_WithoutRealS3(t *testing.T) {
 		SecretKey:   "fake-secret",
 	}
 	proxy := NewS3Proxy(config)
-	checker := NewS3HealthChecker(proxy)
 
-	statusCode, body, err := checker.CheckHealth()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 
+	err := proxy.CheckHealth(ctx)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "S3 health check failed")
-	assert.Equal(t, http.StatusServiceUnavailable, statusCode)
-	assert.Contains(t, string(body), "unhealthy")
-	assert.Contains(t, string(body), "S3 bucket access failed")
 }
