@@ -47,7 +47,6 @@ type S3Config struct {
 	Bucket      string `toml:"bucket"`        // S3 bucket name
 	AccessKeyID string `toml:"access_key_id"` // S3 access key ID
 	SecretKey   string `toml:"secret_key"`    // S3 secret access key
-	PathPrefix  string `toml:"path_prefix"`   // URL path prefix for S3 requests (not used in s3 mode)
 }
 
 // LoadConfig reads the TOML file at configPath, applies QUASAR_* environment

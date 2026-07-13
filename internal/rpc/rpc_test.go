@@ -174,43 +174,6 @@ func TestRPCProxy_ServeHTTP_BackendError(t *testing.T) {
 	assert.Contains(t, rr.Body.String(), "Proxy error:")
 }
 
-func TestRPCProxy_ServeHTTPWithAuth_Authenticated(t *testing.T) {
-	backendServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("authenticated request"))
-	}))
-	defer backendServer.Close()
-
-	proxy, err := NewRPCProxy(backendServer.URL)
-	require.NoError(t, err)
-
-	req := httptest.NewRequest("GET", "/test", nil)
-	rr := httptest.NewRecorder()
-
-	proxy.ServeHTTPWithAuth(rr, req, true)
-
-	assert.Equal(t, http.StatusOK, rr.Code)
-	assert.Contains(t, rr.Body.String(), "authenticated request")
-}
-
-func TestRPCProxy_ServeHTTPWithAuth_Unauthenticated(t *testing.T) {
-	backendServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("Backend should not be called for unauthenticated requests")
-	}))
-	defer backendServer.Close()
-
-	proxy, err := NewRPCProxy(backendServer.URL)
-	require.NoError(t, err)
-
-	req := httptest.NewRequest("GET", "/test", nil)
-	rr := httptest.NewRecorder()
-
-	proxy.ServeHTTPWithAuth(rr, req, false)
-
-	assert.Equal(t, http.StatusUnauthorized, rr.Code)
-	assert.Contains(t, rr.Body.String(), "Unauthorized")
-}
-
 func TestRPCProxy_PreservesRequestDetails(t *testing.T) {
 	backendServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "POST", r.Method)

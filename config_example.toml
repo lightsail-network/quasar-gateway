@@ -19,7 +19,6 @@ region = "us-east-1"                  # S3 region (use "auto" for Cloudflare R2)
 bucket = "your-bucket-name"           # S3 bucket name
 access_key_id = "your-access-key-id"  # S3 access key ID
 secret_key = "your-secret-access-key" # S3 secret access key
-path_prefix = "/files"                # URL path prefix (not used when type=s3)
 
 # Authentication (required for both types)
 [auth]

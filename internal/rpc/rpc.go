@@ -39,12 +39,3 @@ func NewRPCProxy(target string) (*RPCProxy, error) {
 func (rp *RPCProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rp.proxy.ServeHTTP(w, r)
 }
-
-func (rp *RPCProxy) ServeHTTPWithAuth(w http.ResponseWriter, r *http.Request, isAuthenticated bool) {
-	if !isAuthenticated {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	rp.proxy.ServeHTTP(w, r)
-}
