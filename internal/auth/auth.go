@@ -10,15 +10,10 @@ import (
 	"net/http"
 	"time"
 
-	lru "github.com/hashicorp/golang-lru/v2"
+	"github.com/hashicorp/golang-lru/v2/expirable"
 	"golang.org/x/crypto/blake2b"
+	"golang.org/x/sync/singleflight"
 )
-
-// CacheEntry represents a cached validation result
-type CacheEntry struct {
-	Valid      bool
-	Expiration time.Time
-}
 
 // AuthRequest represents the request to the auth service
 type AuthRequest struct {
@@ -39,9 +34,10 @@ type Authenticator struct {
 	authServiceURL   string
 	authServiceToken string
 	httpClient       *http.Client
-	cache            *lru.Cache[string, *CacheEntry]
+	cache            *expirable.LRU[string, bool]
 	cacheExpiration  time.Duration
 	failOpen         bool
+	group            singleflight.Group
 }
 
 // AuthenticatorConfig contains configuration for the authenticator
@@ -78,21 +74,11 @@ func NewAuthenticatorWithConfig(config AuthenticatorConfig) (*Authenticator, err
 		config.CacheSize = 10000
 	}
 
-	httpClient := &http.Client{
-		Timeout: config.HTTPTimeout,
-	}
-
-	// Create LRU cache with size limit
-	cache, err := lru.New[string, *CacheEntry](config.CacheSize)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create LRU cache: %v", err)
-	}
-
 	auth := &Authenticator{
 		authServiceURL:   config.AuthServiceURL,
 		authServiceToken: config.AuthServiceToken,
-		httpClient:       httpClient,
-		cache:            cache,
+		httpClient:       &http.Client{Timeout: config.HTTPTimeout},
+		cache:            expirable.NewLRU[string, bool](config.CacheSize, nil, config.CacheExpiration),
 		cacheExpiration:  config.CacheExpiration,
 		failOpen:         config.FailOpen,
 	}
@@ -105,24 +91,32 @@ func (a *Authenticator) ValidateAPIKey(ctx context.Context, apiKey string) (bool
 		return false, nil
 	}
 
-	// Hash the API key for caching
-	hash, err := a.hashAPIKey(apiKey)
-	if err != nil {
-		return false, fmt.Errorf("failed to hash API key: %v", err)
+	// Cache by hash so raw API keys are never kept in memory
+	hash := hashAPIKey(apiKey)
+
+	if valid, ok := a.cache.Get(hash); ok {
+		return valid, nil
 	}
 
-	// Check cache first
-	if cacheEntry, exists := a.cache.Get(hash); exists {
-		// Check if entry has expired
-		if time.Now().Before(cacheEntry.Expiration) {
-			return cacheEntry.Valid, nil
+	// Collapse concurrent validations of the same key into a single call to
+	// the auth service, so a cache miss under load cannot stampede it.
+	result, err, _ := a.group.Do(hash, func() (interface{}, error) {
+		if valid, ok := a.cache.Get(hash); ok {
+			return valid, nil
 		}
-		// Entry expired, remove it
-		a.cache.Remove(hash)
-	}
 
-	// Try to validate with HTTP
-	valid, err := a.validateWithHTTP(ctx, apiKey)
+		// Detach from the individual request context: the result is shared
+		// with other in-flight requests, so one canceled request must not
+		// fail all of them. The HTTP client timeout still applies.
+		valid, err := a.validateWithHTTP(context.WithoutCancel(ctx), apiKey)
+		if err != nil {
+			return false, err
+		}
+
+		a.cache.Add(hash, valid)
+		return valid, nil
+	})
+
 	if err != nil {
 		if errors.Is(err, errAuthRejected) {
 			// The auth service is up and explicitly rejected the request,
@@ -134,32 +128,18 @@ func (a *Authenticator) ValidateAPIKey(ctx context.Context, apiKey string) (bool
 			// Auth service call failed, allow the request to pass through
 			log.Printf("Auth service call failed, allowing request to pass (fail_open=true): %v", err)
 			return true, nil
-		} else {
-			// Auth service call failed, reject the request
-			log.Printf("Auth service call failed, rejecting request (fail_open=false): %v", err)
-			return false, err
 		}
+		// Auth service call failed, reject the request
+		log.Printf("Auth service call failed, rejecting request (fail_open=false): %v", err)
+		return false, err
 	}
 
-	// Cache the result (LRU will handle eviction if cache is full)
-	a.cache.Add(hash, &CacheEntry{
-		Valid:      valid,
-		Expiration: time.Now().Add(a.cacheExpiration),
-	})
-
-	return valid, nil
+	return result.(bool), nil
 }
 
-func (a *Authenticator) hashAPIKey(apiKey string) (string, error) {
-	hasher, err := blake2b.New256(nil)
-	if err != nil {
-		return "", err
-	}
-
-	hasher.Write([]byte(apiKey))
-	hash := hasher.Sum(nil)
-
-	return fmt.Sprintf("%x", hash), nil
+func hashAPIKey(apiKey string) string {
+	hash := blake2b.Sum256([]byte(apiKey))
+	return fmt.Sprintf("%x", hash)
 }
 
 func (a *Authenticator) validateWithHTTP(ctx context.Context, apiKey string) (bool, error) {

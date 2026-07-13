@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -256,20 +258,48 @@ func TestValidateAPIKey_NetworkError_FailClosed(t *testing.T) {
 }
 
 func TestHashAPIKey(t *testing.T) {
-	auth, err := NewAuthenticator("http://example.com", "test-token")
-	require.NoError(t, err)
-
-	hash1, err := auth.hashAPIKey("test-key")
-	require.NoError(t, err)
+	hash1 := hashAPIKey("test-key")
 	assert.NotEmpty(t, hash1)
+	assert.Equal(t, hash1, hashAPIKey("test-key"))
+	assert.NotEqual(t, hash1, hashAPIKey("different-key"))
+}
 
-	hash2, err := auth.hashAPIKey("test-key")
-	require.NoError(t, err)
-	assert.Equal(t, hash1, hash2)
+func TestValidateAPIKey_SingleFlight(t *testing.T) {
+	var callCount atomic.Int32
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		<-release // Hold the response so all clients pile up on one in-flight call
+		json.NewEncoder(w).Encode(AuthResponse{Valid: true})
+	}))
+	defer server.Close()
 
-	hash3, err := auth.hashAPIKey("different-key")
+	auth, err := NewAuthenticator(server.URL, "test-token")
 	require.NoError(t, err)
-	assert.NotEqual(t, hash1, hash3)
+
+	const concurrency = 10
+	var wg sync.WaitGroup
+	results := make([]bool, concurrency)
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			valid, err := auth.ValidateAPIKey(context.Background(), "shared-key")
+			assert.NoError(t, err)
+			results[i] = valid
+		}(i)
+	}
+
+	// Give the goroutines a moment to reach the in-flight call, then respond.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	// All callers share one upstream validation; latecomers hit the cache.
+	assert.Equal(t, int32(1), callCount.Load())
+	for i, valid := range results {
+		assert.True(t, valid, "request %d should be valid", i)
+	}
 }
 
 func TestValidateAPIKey_InvalidJSONResponse_FailClosed(t *testing.T) {
