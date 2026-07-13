@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -27,7 +28,7 @@ type Gateway struct {
 	s3Proxy       *s3.S3Proxy
 	server        *http.Server
 	healthServer  *http.Server
-	isHealthy     bool
+	isHealthy     atomic.Bool
 }
 
 func main() {
@@ -272,8 +273,8 @@ func NewGateway(cfg *config.Config) (*Gateway, error) {
 		healthChecker: healthChecker,
 		rpcProxy:      rpcProxy,
 		s3Proxy:       s3Proxy,
-		isHealthy:     true, // Start as healthy
 	}
+	gateway.isHealthy.Store(true) // Start as healthy
 
 	// Main server
 	mux := http.NewServeMux()
@@ -322,7 +323,7 @@ func NewGateway(cfg *config.Config) (*Gateway, error) {
 
 func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
 	// Check if service is marked as unhealthy (shutting down)
-	if !g.isHealthy {
+	if !g.isHealthy.Load() {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte(`{"status":"unhealthy","reason":"service shutting down"}`))
@@ -455,7 +456,7 @@ func (g *Gateway) Start() error {
 	log.Println("Shutdown signal received, starting graceful shutdown...")
 
 	// Mark service as unhealthy to prevent new traffic
-	g.isHealthy = false
+	g.isHealthy.Store(false)
 	log.Println("Health check marked as unhealthy, load balancer will stop sending traffic")
 
 	// Wait for configured time to allow existing requests to complete

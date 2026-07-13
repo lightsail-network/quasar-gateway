@@ -57,7 +57,7 @@ func TestNewGateway_RPC(t *testing.T) {
 	assert.NotNil(t, gateway.rpcProxy)
 	assert.NotNil(t, gateway.healthChecker)
 	assert.Nil(t, gateway.s3Proxy)
-	assert.True(t, gateway.isHealthy)
+	assert.True(t, gateway.isHealthy.Load())
 }
 
 func TestNewGateway_S3(t *testing.T) {
@@ -71,7 +71,7 @@ func TestNewGateway_S3(t *testing.T) {
 	assert.NotNil(t, gateway.s3Proxy)
 	assert.NotNil(t, gateway.healthChecker)
 	assert.Nil(t, gateway.rpcProxy)
-	assert.True(t, gateway.isHealthy)
+	assert.True(t, gateway.isHealthy.Load())
 }
 
 func TestNewGateway_UnsupportedType(t *testing.T) {
@@ -112,7 +112,7 @@ func TestGateway_HandleHealth_Unhealthy(t *testing.T) {
 	gateway, err := NewGateway(cfg)
 	require.NoError(t, err)
 
-	gateway.isHealthy = false
+	gateway.isHealthy.Store(false)
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	rr := httptest.NewRecorder()
