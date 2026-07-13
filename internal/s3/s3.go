@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
@@ -69,22 +70,39 @@ func (sp *S3Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	ctx := req.Context()
-
 	if req.Method == http.MethodHead {
-		sp.handleHeadObject(w, ctx, objectKey)
+		sp.handleHeadObject(w, req, objectKey)
 	} else {
-		sp.handleGetObject(w, ctx, objectKey)
+		sp.handleGetObject(w, req, objectKey)
 	}
 }
 
-func (sp *S3Proxy) handleGetObject(w http.ResponseWriter, ctx context.Context, objectKey string) {
+// conditionalHeaders extracts the client's Range and cache-validation
+// headers so they can be forwarded to S3. This is what makes resumable
+// downloads, media seeking (206), and 304 revalidation work end to end.
+func conditionalHeaders(req *http.Request) (rng, ifNoneMatch *string, ifModifiedSince *time.Time) {
+	if v := req.Header.Get("Range"); v != "" {
+		rng = aws.String(v)
+	}
+	if v := req.Header.Get("If-None-Match"); v != "" {
+		ifNoneMatch = aws.String(v)
+	}
+	if v := req.Header.Get("If-Modified-Since"); v != "" {
+		if t, err := http.ParseTime(v); err == nil {
+			ifModifiedSince = aws.Time(t)
+		}
+	}
+	return rng, ifNoneMatch, ifModifiedSince
+}
+
+func (sp *S3Proxy) handleGetObject(w http.ResponseWriter, req *http.Request, objectKey string) {
 	input := &s3.GetObjectInput{
 		Bucket: aws.String(sp.bucket),
 		Key:    aws.String(objectKey),
 	}
+	input.Range, input.IfNoneMatch, input.IfModifiedSince = conditionalHeaders(req)
 
-	result, err := sp.client.GetObject(ctx, input)
+	result, err := sp.client.GetObject(req.Context(), input)
 	if err != nil {
 		sp.handleS3Error(w, err)
 		return
@@ -94,12 +112,17 @@ func (sp *S3Proxy) handleGetObject(w http.ResponseWriter, ctx context.Context, o
 	writeObjectHeaders(w.Header(), objectHeaders{
 		contentType:        result.ContentType,
 		contentLength:      result.ContentLength,
+		contentRange:       result.ContentRange,
 		etag:               result.ETag,
 		lastModified:       result.LastModified,
 		cacheControl:       result.CacheControl,
 		contentEncoding:    result.ContentEncoding,
 		contentDisposition: result.ContentDisposition,
 	})
+
+	if result.ContentRange != nil {
+		w.WriteHeader(http.StatusPartialContent)
+	}
 
 	// Copy object data to response
 	if _, err := io.Copy(w, result.Body); err != nil {
@@ -108,13 +131,14 @@ func (sp *S3Proxy) handleGetObject(w http.ResponseWriter, ctx context.Context, o
 	}
 }
 
-func (sp *S3Proxy) handleHeadObject(w http.ResponseWriter, ctx context.Context, objectKey string) {
+func (sp *S3Proxy) handleHeadObject(w http.ResponseWriter, req *http.Request, objectKey string) {
 	input := &s3.HeadObjectInput{
 		Bucket: aws.String(sp.bucket),
 		Key:    aws.String(objectKey),
 	}
+	input.Range, input.IfNoneMatch, input.IfModifiedSince = conditionalHeaders(req)
 
-	result, err := sp.client.HeadObject(ctx, input)
+	result, err := sp.client.HeadObject(req.Context(), input)
 	if err != nil {
 		sp.handleS3Error(w, err)
 		return
@@ -123,6 +147,7 @@ func (sp *S3Proxy) handleHeadObject(w http.ResponseWriter, ctx context.Context, 
 	writeObjectHeaders(w.Header(), objectHeaders{
 		contentType:        result.ContentType,
 		contentLength:      result.ContentLength,
+		contentRange:       result.ContentRange,
 		etag:               result.ETag,
 		lastModified:       result.LastModified,
 		cacheControl:       result.CacheControl,
@@ -130,7 +155,11 @@ func (sp *S3Proxy) handleHeadObject(w http.ResponseWriter, ctx context.Context, 
 		contentDisposition: result.ContentDisposition,
 	})
 
-	w.WriteHeader(http.StatusOK)
+	if result.ContentRange != nil {
+		w.WriteHeader(http.StatusPartialContent)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
 }
 
 // objectHeaders carries the object metadata shared by GetObject and
@@ -138,6 +167,7 @@ func (sp *S3Proxy) handleHeadObject(w http.ResponseWriter, ctx context.Context, 
 type objectHeaders struct {
 	contentType        *string
 	contentLength      *int64
+	contentRange       *string
 	etag               *string
 	lastModified       *time.Time
 	cacheControl       *string
@@ -146,6 +176,11 @@ type objectHeaders struct {
 }
 
 func writeObjectHeaders(h http.Header, o objectHeaders) {
+	// Objects are served by byte offset, so clients may issue Range requests.
+	h.Set("Accept-Ranges", "bytes")
+	if o.contentRange != nil {
+		h.Set("Content-Range", *o.contentRange)
+	}
 	if o.contentType != nil {
 		h.Set("Content-Type", *o.contentType)
 	}
@@ -182,6 +217,21 @@ func (sp *S3Proxy) handleS3Error(w http.ResponseWriter, err error) {
 	if errors.As(err, &noSuchBucket) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
+	}
+
+	// The SDK surfaces conditional-request and range outcomes as HTTP
+	// response errors rather than typed ones.
+	var respErr *awshttp.ResponseError
+	if errors.As(err, &respErr) {
+		switch respErr.HTTPStatusCode() {
+		case http.StatusNotModified:
+			// 304 must not carry a body
+			w.WriteHeader(http.StatusNotModified)
+			return
+		case http.StatusRequestedRangeNotSatisfiable:
+			http.Error(w, "Requested Range Not Satisfiable", http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
 	}
 
 	// Generic error

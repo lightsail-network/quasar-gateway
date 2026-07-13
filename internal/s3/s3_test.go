@@ -1,11 +1,16 @@
 package s3
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewS3Proxy(t *testing.T) {
@@ -66,6 +71,78 @@ func TestS3Proxy_ServeHTTP_EmptyObjectKey(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, rr.Code)
 	assert.Contains(t, rr.Body.String(), "Object key is required")
+}
+
+func TestConditionalHeaders(t *testing.T) {
+	req := httptest.NewRequest("GET", "/file.bin", nil)
+	req.Header.Set("Range", "bytes=100-199")
+	req.Header.Set("If-None-Match", `"abc123"`)
+	req.Header.Set("If-Modified-Since", "Mon, 02 Jan 2006 15:04:05 GMT")
+
+	rng, ifNoneMatch, ifModifiedSince := conditionalHeaders(req)
+
+	require.NotNil(t, rng)
+	assert.Equal(t, "bytes=100-199", *rng)
+	require.NotNil(t, ifNoneMatch)
+	assert.Equal(t, `"abc123"`, *ifNoneMatch)
+	require.NotNil(t, ifModifiedSince)
+	assert.Equal(t, time.Date(2006, 1, 2, 15, 4, 5, 0, time.UTC), ifModifiedSince.UTC())
+}
+
+func TestConditionalHeaders_Absent(t *testing.T) {
+	req := httptest.NewRequest("GET", "/file.bin", nil)
+
+	rng, ifNoneMatch, ifModifiedSince := conditionalHeaders(req)
+
+	assert.Nil(t, rng)
+	assert.Nil(t, ifNoneMatch)
+	assert.Nil(t, ifModifiedSince)
+}
+
+func TestConditionalHeaders_InvalidIfModifiedSince(t *testing.T) {
+	req := httptest.NewRequest("GET", "/file.bin", nil)
+	req.Header.Set("If-Modified-Since", "not-a-date")
+
+	_, _, ifModifiedSince := conditionalHeaders(req)
+
+	assert.Nil(t, ifModifiedSince)
+}
+
+func s3ResponseError(statusCode int) error {
+	return &awshttp.ResponseError{
+		ResponseError: &smithyhttp.ResponseError{
+			Response: &smithyhttp.Response{Response: &http.Response{StatusCode: statusCode}},
+			Err:      errors.New("s3 response error"),
+		},
+	}
+}
+
+func TestHandleS3Error_NotModified(t *testing.T) {
+	proxy := &S3Proxy{bucket: "test"}
+	rr := httptest.NewRecorder()
+
+	proxy.handleS3Error(rr, s3ResponseError(http.StatusNotModified))
+
+	assert.Equal(t, http.StatusNotModified, rr.Code)
+	assert.Empty(t, rr.Body.String())
+}
+
+func TestHandleS3Error_RangeNotSatisfiable(t *testing.T) {
+	proxy := &S3Proxy{bucket: "test"}
+	rr := httptest.NewRecorder()
+
+	proxy.handleS3Error(rr, s3ResponseError(http.StatusRequestedRangeNotSatisfiable))
+
+	assert.Equal(t, http.StatusRequestedRangeNotSatisfiable, rr.Code)
+}
+
+func TestHandleS3Error_GenericServerError(t *testing.T) {
+	proxy := &S3Proxy{bucket: "test"}
+	rr := httptest.NewRecorder()
+
+	proxy.handleS3Error(rr, s3ResponseError(http.StatusForbidden))
+
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
 }
 
 func TestNewS3HealthChecker(t *testing.T) {
