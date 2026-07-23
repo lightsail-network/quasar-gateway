@@ -23,6 +23,8 @@ var envOverrides = []envOverride{
 	{"QUASAR_SERVER_GRACEFUL_SHUTDOWN_SEC", "Graceful shutdown wait time (e.g., 30)", func(c *Config, v string) error { return setInt(&c.Server.GracefulShutdownSec, v) }},
 	{"QUASAR_SERVER_TYPE", "Gateway type (rpc or s3)", func(c *Config, v string) error { c.Server.Type = v; return nil }},
 	{"QUASAR_RPC_URL", "RPC server URL", func(c *Config, v string) error { c.RPC.URL = v; return nil }},
+	{"QUASAR_HTTP_URL", "HTTP backend URL", func(c *Config, v string) error { c.HTTP.URL = v; return nil }},
+	{"QUASAR_HTTP_HEALTH_PATH", "HTTP backend health path (default: /health)", func(c *Config, v string) error { c.HTTP.HealthPath = v; return nil }},
 	{"QUASAR_S3_ENDPOINT", "S3 endpoint URL", func(c *Config, v string) error { c.S3.Endpoint = v; return nil }},
 	{"QUASAR_S3_REGION", "S3 region", func(c *Config, v string) error { c.S3.Region = v; return nil }},
 	{"QUASAR_S3_BUCKET", "S3 bucket name", func(c *Config, v string) error { c.S3.Bucket = v; return nil }},

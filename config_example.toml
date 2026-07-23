@@ -6,11 +6,16 @@ host = "0.0.0.0"           # Listen on all interfaces
 port = 8080                # Main HTTP port
 health_port = 8081         # Health check port (default: main port + 1)
 graceful_shutdown_sec = 30 # Time to wait before shutdown (default: 30)
-type = "rpc"               # Gateway type: "rpc" or "s3" (default: "rpc")
+type = "rpc"               # Gateway type: "rpc", "s3" or "http" (default: "rpc")
 
 # RPC Configuration (for type = "rpc")
 [rpc]
 url = "http://localhost:8545" # Your RPC server URL
+
+# HTTP Configuration (for type = "http" — plain HTTP backends like wallet-backend)
+[http]
+url = "http://localhost:8003" # Backend base URL
+health_path = "/health"       # Health endpoint path, 2xx = healthy (default: "/health")
 
 # S3 Configuration (for type = "s3")
 [s3]

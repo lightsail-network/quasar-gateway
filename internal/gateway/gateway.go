@@ -93,8 +93,22 @@ func New(cfg *config.Config) (*Gateway, error) {
 		extractKey = headerKey
 		slog.Info("S3 proxy configured", "bucket", cfg.S3.Bucket, "endpoint", cfg.S3.Endpoint, "region", cfg.S3.Region)
 
+	case config.GatewayTypeHTTP:
+		// The RPC proxy is a generic single-host reverse proxy; HTTP mode
+		// reuses it and differs only in health checking and key extraction.
+		proxy, err := rpc.NewRPCProxy(cfg.HTTP.URL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create HTTP proxy: %v", err)
+		}
+		gateway.backend = proxy
+		gateway.healthChecker = health.NewHTTPStatusChecker(cfg.HTTP.URL, cfg.HTTP.HealthPath)
+		// Header-only key extraction: an HTTP backend has real single-segment
+		// paths (e.g. /graphql), so URL-token extraction must not eat them.
+		extractKey = headerKey
+		slog.Info("HTTP proxy configured", "url", cfg.HTTP.URL, "health_path", cfg.HTTP.HealthPath)
+
 	default:
-		return nil, fmt.Errorf("unsupported gateway type: %s (must be 'rpc' or 's3')", cfg.Server.Type)
+		return nil, fmt.Errorf("unsupported gateway type: %s (must be 'rpc', 's3' or 'http')", cfg.Server.Type)
 	}
 
 	// Main server: every path goes through CORS handling — and, unless the
@@ -114,12 +128,12 @@ func New(cfg *config.Config) (*Gateway, error) {
 		ReadTimeout: 30 * time.Second,
 		IdleTimeout: 60 * time.Second,
 	}
-	if cfg.Server.Type == config.GatewayTypeRPC {
-		// JSON-RPC exchanges are short-lived, so a write deadline is safe.
-		// S3 mode streams arbitrarily large objects: WriteTimeout is measured
-		// from the start of the request, so any fixed value would cut off
-		// large or slow downloads mid-body. Rely on the client/LB timeouts
-		// there instead.
+	if cfg.Server.Type == config.GatewayTypeRPC || cfg.Server.Type == config.GatewayTypeHTTP {
+		// JSON-RPC and plain-HTTP API exchanges are short-lived, so a write
+		// deadline is safe. S3 mode streams arbitrarily large objects:
+		// WriteTimeout is measured from the start of the request, so any
+		// fixed value would cut off large or slow downloads mid-body. Rely
+		// on the client/LB timeouts there instead.
 		gateway.server.WriteTimeout = 30 * time.Second
 	}
 

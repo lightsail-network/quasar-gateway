@@ -11,6 +11,7 @@ import (
 
 	"quasar-gateway/config"
 	"quasar-gateway/internal/auth"
+	"quasar-gateway/internal/health"
 	"quasar-gateway/internal/rpc"
 	"quasar-gateway/internal/s3"
 
@@ -29,6 +30,9 @@ func createTestConfig(serverType string) *config.Config {
 		},
 		RPC: config.RPCConfig{
 			URL: "http://localhost:8080",
+		},
+		HTTP: config.HTTPConfig{
+			URL: "http://localhost:8003",
 		},
 		S3: config.S3Config{
 			Endpoint:    "https://test.s3.amazonaws.com",
@@ -83,6 +87,89 @@ func TestNew_S3(t *testing.T) {
 	assert.True(t, gateway.isHealthy.Load())
 	// No write deadline in S3 mode: large downloads must not be cut off.
 	assert.Zero(t, gateway.server.WriteTimeout)
+}
+
+func TestNew_HTTP(t *testing.T) {
+	cfg := createTestConfig("http")
+
+	gateway, err := New(cfg)
+	require.NoError(t, err)
+	assert.NotNil(t, gateway)
+	assert.NotNil(t, gateway.authenticator)
+	assert.IsType(t, &rpc.RPCProxy{}, gateway.backend)
+	assert.IsType(t, &health.HTTPStatusChecker{}, gateway.healthChecker)
+	assert.True(t, gateway.isHealthy.Load())
+	// Short-lived API exchanges: same write deadline as RPC mode.
+	assert.Equal(t, 30*time.Second, gateway.server.WriteTimeout)
+}
+
+// HTTP mode extracts keys from the header only: a single-segment path like
+// /graphql is a real route on the backend and must never be consumed as a
+// URL token.
+func TestGateway_HTTP_PathNeverTreatedAsToken(t *testing.T) {
+	cfg := createTestConfig("http")
+	gateway, err := New(cfg)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("POST", "/graphql", strings.NewReader(`{"query": "{}"}`))
+	rr := serve(gateway, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	assert.Contains(t, rr.Body.String(), "Missing or invalid Authorization header")
+	// The path must survive untouched — no rewrite to "/".
+	assert.Equal(t, "/graphql", req.URL.Path)
+}
+
+// Open HTTP gateway in front of a wallet-backend-shaped API: requests pass
+// through untouched and the gateway health endpoint mirrors the backend's
+// /health status.
+func TestGateway_HTTP_AuthDisabled_EndToEnd(t *testing.T) {
+	backendHealthy := true
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			if backendHealthy {
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprint(w, `{"status": "ok"}`)
+			} else {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				fmt.Fprint(w, `{"error": "wallet backend is not in sync with the RPC"}`)
+			}
+		case "/graphql":
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, `{"data": {}, "method": "%s"}`, r.Method)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer backend.Close()
+
+	cfg := createTestConfig("http")
+	cfg.HTTP.URL = backend.URL
+	disableAuth(cfg)
+
+	gateway, err := New(cfg)
+	require.NoError(t, err)
+	assert.Nil(t, gateway.authenticator)
+
+	// GraphQL request passes through without credentials.
+	req := httptest.NewRequest("POST", "/graphql", strings.NewReader(`{"query": "{}"}`))
+	rr := serve(gateway, req)
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Contains(t, rr.Body.String(), `"method": "POST"`)
+	assert.Equal(t, "*", rr.Header().Get("Access-Control-Allow-Origin"))
+
+	// Gateway health follows the backend's /health status code.
+	healthReq := httptest.NewRequest("GET", "/health", nil)
+	healthRR := httptest.NewRecorder()
+	gateway.handleHealth(healthRR, healthReq)
+	assert.Equal(t, http.StatusOK, healthRR.Code)
+
+	backendHealthy = false
+	healthRR = httptest.NewRecorder()
+	gateway.handleHealth(healthRR, healthReq)
+	assert.Equal(t, http.StatusServiceUnavailable, healthRR.Code)
+	assert.Contains(t, healthRR.Body.String(), "503")
 }
 
 func TestNew_UnsupportedType(t *testing.T) {

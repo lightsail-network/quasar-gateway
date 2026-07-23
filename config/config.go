@@ -9,13 +9,15 @@ import (
 
 // Gateway types selectable via server.type.
 const (
-	GatewayTypeRPC = "rpc"
-	GatewayTypeS3  = "s3"
+	GatewayTypeRPC  = "rpc"
+	GatewayTypeS3   = "s3"
+	GatewayTypeHTTP = "http"
 )
 
 type Config struct {
 	Server ServerConfig `toml:"server"`
 	RPC    RPCConfig    `toml:"rpc"`
+	HTTP   HTTPConfig   `toml:"http"`
 	Auth   AuthConfig   `toml:"auth"`
 	S3     S3Config     `toml:"s3"`
 }
@@ -30,6 +32,13 @@ type ServerConfig struct {
 
 type RPCConfig struct {
 	URL string `toml:"url"`
+}
+
+// HTTPConfig configures a plain-HTTP backend (e.g. wallet-backend): requests
+// are proxied as-is and health is a GET on HealthPath expecting a 2xx status.
+type HTTPConfig struct {
+	URL        string `toml:"url"`
+	HealthPath string `toml:"health_path"` // health endpoint path (default "/health")
 }
 
 type AuthConfig struct {
@@ -92,6 +101,9 @@ func (c *Config) ApplyDefaults() {
 		enabled := true
 		c.Auth.Enabled = &enabled
 	}
+	if c.HTTP.HealthPath == "" {
+		c.HTTP.HealthPath = "/health"
+	}
 	if c.Server.Port == 0 {
 		c.Server.Port = 8080
 	}
@@ -127,8 +139,12 @@ func (c *Config) Validate() error {
 		if c.S3.AccessKeyID == "" || c.S3.SecretKey == "" {
 			return fmt.Errorf("s3.access_key_id and s3.secret_key are required when server.type is %q", GatewayTypeS3)
 		}
+	case GatewayTypeHTTP:
+		if c.HTTP.URL == "" {
+			return fmt.Errorf("http.url is required when server.type is %q", GatewayTypeHTTP)
+		}
 	default:
-		return fmt.Errorf("unsupported gateway type: %s (must be 'rpc' or 's3')", c.Server.Type)
+		return fmt.Errorf("unsupported gateway type: %s (must be 'rpc', 's3' or 'http')", c.Server.Type)
 	}
 	if c.AuthEnabled() && c.Auth.ServiceURL == "" {
 		return fmt.Errorf("auth.service_url is required (or set auth.enabled = false for an open gateway)")

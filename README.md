@@ -29,8 +29,10 @@ The config is validated at startup: missing required values (e.g. `rpc.url`, `au
 | `QUASAR_SERVER_PORT`                  | Server port                              | `8080`                     |
 | `QUASAR_SERVER_HEALTH_PORT`           | Health check server port                 | `8081`                     |
 | `QUASAR_SERVER_GRACEFUL_SHUTDOWN_SEC` | Graceful shutdown wait time              | `30`                       |
-| `QUASAR_SERVER_TYPE`                  | Gateway type                             | `rpc` or `s3`              |
+| `QUASAR_SERVER_TYPE`                  | Gateway type                             | `rpc`, `s3` or `http`      |
 | `QUASAR_RPC_URL`                      | Backend RPC URL                          | `http://localhost:8545`    |
+| `QUASAR_HTTP_URL`                     | HTTP backend base URL                    | `http://localhost:8003`    |
+| `QUASAR_HTTP_HEALTH_PATH`             | HTTP backend health path                 | `/health` (default)        |
 | `QUASAR_S3_ENDPOINT`                  | S3 endpoint URL                          | `https://s3.amazonaws.com` |
 | `QUASAR_S3_REGION`                    | S3 region                                | `us-east-1`                |
 | `QUASAR_S3_BUCKET`                    | S3 bucket name                           | `my-bucket`                |
@@ -56,6 +58,7 @@ The config is validated at startup: missing required values (e.g. `rpc.url`, `au
   - Open gateway: set `[auth] enabled = false` (or `QUASAR_AUTH_ENABLED=false`) to skip API key validation entirely — requests are proxied as-is (no URL-token path rewrite), the other `[auth]` settings are ignored, and CORS/health/graceful-shutdown behavior stays the same
 - **CORS**: handled by the gateway itself — `OPTIONS` preflight requests are answered with `204` and skip authentication; all responses carry `Access-Control-Allow-Origin: *`
 - **S3 mode**: only `GET`/`HEAD` are allowed; `Range`, `If-None-Match`, and `If-Modified-Since` headers are passed through, so resumable downloads (206) and cache revalidation (304) work
+- **HTTP mode**: generic reverse proxy for plain HTTP backends (e.g. wallet-backend's GraphQL API); all methods and paths are proxied as-is, keys are extracted from the `Authorization` header only (no URL-token path rewrite, so real routes like `/graphql` are never consumed), and backend health is `GET <url><health_path>` with any 2xx counting as healthy
 
 ### Health Check
 

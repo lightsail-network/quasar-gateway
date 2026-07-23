@@ -135,6 +135,38 @@ enabled = true
 			expectError: "auth.service_url is required",
 		},
 		{
+			name: "valid http config",
+			configData: `
+[server]
+type = "http"
+
+[http]
+url = "http://wallet-backend:8003"
+
+[auth]
+enabled = false
+`,
+			check: func(t *testing.T, c *Config) {
+				if c.HTTP.URL != "http://wallet-backend:8003" {
+					t.Errorf("Expected http URL http://wallet-backend:8003, got %s", c.HTTP.URL)
+				}
+				if c.HTTP.HealthPath != "/health" {
+					t.Errorf("Expected default health path /health, got %s", c.HTTP.HealthPath)
+				}
+			},
+		},
+		{
+			name: "http type missing url",
+			configData: `
+[server]
+type = "http"
+
+[auth]
+enabled = false
+`,
+			expectError: "http.url is required",
+		},
+		{
 			name: "s3 type missing bucket",
 			configData: `
 [server]
@@ -302,6 +334,8 @@ func TestApplyEnvOverrides(t *testing.T) {
 	t.Setenv("QUASAR_SERVER_HOST", "env-host")
 	t.Setenv("QUASAR_SERVER_PORT", "9090")
 	t.Setenv("QUASAR_RPC_URL", "http://env-rpc.com")
+	t.Setenv("QUASAR_HTTP_URL", "http://env-http.com")
+	t.Setenv("QUASAR_HTTP_HEALTH_PATH", "/env-health")
 	t.Setenv("QUASAR_AUTH_ENABLED", "false")
 	t.Setenv("QUASAR_AUTH_SERVICE_URL", "http://env-auth.com")
 	t.Setenv("QUASAR_AUTH_FAIL_OPEN", "false")
@@ -327,6 +361,12 @@ func TestApplyEnvOverrides(t *testing.T) {
 	}
 	if c.AuthEnabled() {
 		t.Errorf("Expected auth disabled via QUASAR_AUTH_ENABLED=false")
+	}
+	if c.HTTP.URL != "http://env-http.com" {
+		t.Errorf("Expected HTTP URL http://env-http.com, got %s", c.HTTP.URL)
+	}
+	if c.HTTP.HealthPath != "/env-health" {
+		t.Errorf("Expected HTTP health path /env-health, got %s", c.HTTP.HealthPath)
 	}
 }
 
