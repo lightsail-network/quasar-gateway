@@ -28,6 +28,7 @@ var envOverrides = []envOverride{
 	{"QUASAR_S3_BUCKET", "S3 bucket name", func(c *Config, v string) error { c.S3.Bucket = v; return nil }},
 	{"QUASAR_S3_ACCESS_KEY_ID", "S3 access key ID", func(c *Config, v string) error { c.S3.AccessKeyID = v; return nil }},
 	{"QUASAR_S3_SECRET_KEY", "S3 secret access key", func(c *Config, v string) error { c.S3.SecretKey = v; return nil }},
+	{"QUASAR_AUTH_ENABLED", "Enable API key authentication (default: true)", func(c *Config, v string) error { return setBoolPtr(&c.Auth.Enabled, v) }},
 	{"QUASAR_AUTH_SERVICE_URL", "Auth service URL", func(c *Config, v string) error { c.Auth.ServiceURL = v; return nil }},
 	{"QUASAR_AUTH_SERVICE_TOKEN", "Auth service token", func(c *Config, v string) error { c.Auth.ServiceToken = v; return nil }},
 	{"QUASAR_AUTH_CACHE_EXPIRATION", "Auth cache expiration (seconds)", func(c *Config, v string) error { return setInt(&c.Auth.CacheExpiration, v) }},
@@ -51,6 +52,15 @@ func setBool(dst *bool, value string) error {
 		return fmt.Errorf("expected a boolean, got %q", value)
 	}
 	*dst = b
+	return nil
+}
+
+func setBoolPtr(dst **bool, value string) error {
+	b, err := strconv.ParseBool(value)
+	if err != nil {
+		return fmt.Errorf("expected a boolean, got %q", value)
+	}
+	*dst = &b
 	return nil
 }
 

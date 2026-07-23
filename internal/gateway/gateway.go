@@ -36,31 +36,35 @@ type Gateway struct {
 func New(cfg *config.Config) (*Gateway, error) {
 	cfg.ApplyDefaults()
 
-	authConfig := auth.AuthenticatorConfig{
-		AuthServiceURL:   cfg.Auth.ServiceURL,
-		AuthServiceToken: cfg.Auth.ServiceToken,
-		CacheExpiration:  time.Duration(cfg.Auth.CacheExpiration) * time.Second,
-		HTTPTimeout:      time.Duration(cfg.Auth.HTTPTimeout) * time.Second,
-		CacheSize:        cfg.Auth.CacheSize,
-		FailOpen:         cfg.Auth.FailOpen,
-	}
-
-	slog.Info("authenticator configured",
-		"auth_service_url", authConfig.AuthServiceURL,
-		"cache_size", authConfig.CacheSize,
-		"cache_expiration", authConfig.CacheExpiration,
-		"fail_open", authConfig.FailOpen)
-
-	authenticator, err := auth.NewAuthenticatorWithConfig(authConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create authenticator: %v", err)
-	}
-
 	gateway := &Gateway{
-		config:        cfg,
-		authenticator: authenticator,
+		config: cfg,
 	}
 	gateway.isHealthy.Store(true) // Start as healthy
+
+	if cfg.AuthEnabled() {
+		authConfig := auth.AuthenticatorConfig{
+			AuthServiceURL:   cfg.Auth.ServiceURL,
+			AuthServiceToken: cfg.Auth.ServiceToken,
+			CacheExpiration:  time.Duration(cfg.Auth.CacheExpiration) * time.Second,
+			HTTPTimeout:      time.Duration(cfg.Auth.HTTPTimeout) * time.Second,
+			CacheSize:        cfg.Auth.CacheSize,
+			FailOpen:         cfg.Auth.FailOpen,
+		}
+
+		slog.Info("authenticator configured",
+			"auth_service_url", authConfig.AuthServiceURL,
+			"cache_size", authConfig.CacheSize,
+			"cache_expiration", authConfig.CacheExpiration,
+			"fail_open", authConfig.FailOpen)
+
+		authenticator, err := auth.NewAuthenticatorWithConfig(authConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create authenticator: %v", err)
+		}
+		gateway.authenticator = authenticator
+	} else {
+		slog.Warn("authentication disabled: gateway is open, all requests are proxied without an API key")
+	}
 
 	slog.Info("gateway type", "type", cfg.Server.Type)
 
@@ -93,10 +97,16 @@ func New(cfg *config.Config) (*Gateway, error) {
 		return nil, fmt.Errorf("unsupported gateway type: %s (must be 'rpc' or 's3')", cfg.Server.Type)
 	}
 
-	// Main server: every path goes through CORS handling and authentication
-	// to the backend.
+	// Main server: every path goes through CORS handling — and, unless the
+	// gateway is open, API key authentication — to the backend. With auth
+	// disabled no key is extracted, so RPC-mode URL-token paths are not
+	// rewritten and reach the backend as-is.
+	handler := gateway.backend
+	if cfg.AuthEnabled() {
+		handler = gateway.requireAPIKey(extractKey, handler)
+	}
 	mux := http.NewServeMux()
-	mux.Handle("/", corsMiddleware(gateway.requireAPIKey(extractKey, gateway.backend)))
+	mux.Handle("/", corsMiddleware(handler))
 
 	gateway.server = &http.Server{
 		Addr:        fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
@@ -229,8 +239,10 @@ func (g *Gateway) shutdown() error {
 		}
 	}
 
-	if err := g.authenticator.Close(); err != nil {
-		slog.Error("failed to close authenticator", "error", err)
+	if g.authenticator != nil {
+		if err := g.authenticator.Close(); err != nil {
+			slog.Error("failed to close authenticator", "error", err)
+		}
 	}
 
 	slog.Info("servers exited")

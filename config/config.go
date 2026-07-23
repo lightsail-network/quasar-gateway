@@ -33,12 +33,20 @@ type RPCConfig struct {
 }
 
 type AuthConfig struct {
+	Enabled         *bool  `toml:"enabled"`     // API key authentication (default true); false runs an open gateway
 	ServiceURL      string `toml:"service_url"` // Base URL of auth service (e.g., "https://auth.example.com")
 	ServiceToken    string `toml:"service_token"`
 	CacheExpiration int    `toml:"cache_expiration"` // seconds (default 300 = 5 minutes)
 	HTTPTimeout     int    `toml:"http_timeout"`     // seconds (default 5)
 	CacheSize       int    `toml:"cache_size"`       // max entries in cache (default 10000)
 	FailOpen        bool   `toml:"fail_open"`        // Allow requests when auth service is down (default false)
+}
+
+// AuthEnabled reports whether API key authentication is on. Unset means
+// enabled: an open gateway must be an explicit choice (`enabled = false`),
+// never the result of an omitted line.
+func (c *Config) AuthEnabled() bool {
+	return c.Auth.Enabled == nil || *c.Auth.Enabled
 }
 
 type S3Config struct {
@@ -80,6 +88,10 @@ func (c *Config) ApplyDefaults() {
 	if c.Server.Type == "" {
 		c.Server.Type = GatewayTypeRPC
 	}
+	if c.Auth.Enabled == nil {
+		enabled := true
+		c.Auth.Enabled = &enabled
+	}
 	if c.Server.Port == 0 {
 		c.Server.Port = 8080
 	}
@@ -118,8 +130,8 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("unsupported gateway type: %s (must be 'rpc' or 's3')", c.Server.Type)
 	}
-	if c.Auth.ServiceURL == "" {
-		return fmt.Errorf("auth.service_url is required")
+	if c.AuthEnabled() && c.Auth.ServiceURL == "" {
+		return fmt.Errorf("auth.service_url is required (or set auth.enabled = false for an open gateway)")
 	}
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port must be between 1 and 65535, got %d", c.Server.Port)

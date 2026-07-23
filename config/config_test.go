@@ -101,6 +101,40 @@ url = "http://example.com"
 			expectError: "auth.service_url is required",
 		},
 		{
+			name: "auth disabled needs no auth service",
+			configData: `
+[server]
+host = "0.0.0.0"
+port = 3000
+
+[rpc]
+url = "http://example.com"
+
+[auth]
+enabled = false
+`,
+			check: func(t *testing.T, c *Config) {
+				if c.AuthEnabled() {
+					t.Errorf("Expected auth to be disabled")
+				}
+			},
+		},
+		{
+			name: "auth explicitly enabled still requires service url",
+			configData: `
+[server]
+host = "0.0.0.0"
+port = 3000
+
+[rpc]
+url = "http://example.com"
+
+[auth]
+enabled = true
+`,
+			expectError: "auth.service_url is required",
+		},
+		{
 			name: "s3 type missing bucket",
 			configData: `
 [server]
@@ -163,6 +197,37 @@ service_url = "https://auth.example.com"
 	}
 }
 
+// One shared config file with full auth settings can serve both a pro
+// (authenticated) and a free (open) gateway instance: the free instance just
+// sets QUASAR_AUTH_ENABLED=false, which wins over the file.
+func TestLoadConfig_SharedFileEnvDisablesAuth(t *testing.T) {
+	configData := `
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[rpc]
+url = "http://rpc:8000"
+
+[auth]
+service_url = "https://auth.example.com"
+service_token = "pro-token"
+`
+	t.Setenv("QUASAR_AUTH_ENABLED", "false")
+
+	config, err := LoadConfig(writeConfigFile(t, configData))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if config.AuthEnabled() {
+		t.Errorf("Expected env override to disable auth over the shared file")
+	}
+	// File values are still loaded, just ignored in open mode.
+	if config.Auth.ServiceURL != "https://auth.example.com" {
+		t.Errorf("Expected file auth values to remain readable, got %q", config.Auth.ServiceURL)
+	}
+}
+
 func TestLoadConfigNonExistentFile(t *testing.T) {
 	_, err := LoadConfig("/nonexistent/config.toml")
 	if err == nil {
@@ -174,6 +239,12 @@ func TestApplyDefaults(t *testing.T) {
 	c := &Config{}
 	c.ApplyDefaults()
 
+	if !c.AuthEnabled() {
+		t.Errorf("Expected auth enabled by default")
+	}
+	if c.Auth.Enabled == nil || !*c.Auth.Enabled {
+		t.Errorf("Expected ApplyDefaults to materialize auth.enabled = true, got %v", c.Auth.Enabled)
+	}
 	if c.Server.Type != GatewayTypeRPC {
 		t.Errorf("Expected default type rpc, got %s", c.Server.Type)
 	}
@@ -231,6 +302,7 @@ func TestApplyEnvOverrides(t *testing.T) {
 	t.Setenv("QUASAR_SERVER_HOST", "env-host")
 	t.Setenv("QUASAR_SERVER_PORT", "9090")
 	t.Setenv("QUASAR_RPC_URL", "http://env-rpc.com")
+	t.Setenv("QUASAR_AUTH_ENABLED", "false")
 	t.Setenv("QUASAR_AUTH_SERVICE_URL", "http://env-auth.com")
 	t.Setenv("QUASAR_AUTH_FAIL_OPEN", "false")
 
@@ -252,6 +324,9 @@ func TestApplyEnvOverrides(t *testing.T) {
 	}
 	if c.Auth.FailOpen {
 		t.Errorf("Expected fail_open false")
+	}
+	if c.AuthEnabled() {
+		t.Errorf("Expected auth disabled via QUASAR_AUTH_ENABLED=false")
 	}
 }
 

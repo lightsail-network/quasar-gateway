@@ -272,6 +272,72 @@ func TestGateway_IntegrationWithMockServers(t *testing.T) {
 	}
 }
 
+// disableAuth turns cfg into an open-gateway config, clearing the auth
+// service fields to prove they are not needed in that mode.
+func disableAuth(cfg *config.Config) {
+	enabled := false
+	cfg.Auth = config.AuthConfig{Enabled: &enabled}
+}
+
+// With auth disabled, requests without any credentials are proxied straight
+// to the backend, single-segment paths are NOT treated as URL tokens, and no
+// authenticator is created at all.
+func TestGateway_AuthDisabled_RPCPassthrough(t *testing.T) {
+	rpcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, `{"result": "success", "path": "%s"}`, r.URL.Path)
+	}))
+	defer rpcServer.Close()
+
+	cfg := createTestConfig("rpc")
+	cfg.RPC.URL = rpcServer.URL
+	disableAuth(cfg)
+
+	gateway, err := New(cfg)
+	require.NoError(t, err)
+	assert.Nil(t, gateway.authenticator)
+
+	for _, path := range []string{"/", "/looks-like-a-token", "/api/v1/method"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest("POST", path, strings.NewReader(`{"method": "test"}`))
+			rr := serve(gateway, req)
+
+			assert.Equal(t, http.StatusOK, rr.Code)
+			// The path must reach the backend unchanged: no URL-token rewrite.
+			assert.Contains(t, rr.Body.String(), fmt.Sprintf(`"path": "%s"`, path))
+			// CORS headers still apply in open mode.
+			assert.Equal(t, "*", rr.Header().Get("Access-Control-Allow-Origin"))
+		})
+	}
+}
+
+func TestGateway_AuthDisabled_S3(t *testing.T) {
+	cfg := createTestConfig("s3")
+	disableAuth(cfg)
+
+	gateway, err := New(cfg)
+	require.NoError(t, err)
+	assert.Nil(t, gateway.authenticator)
+	assert.IsType(t, &s3.S3Proxy{}, gateway.backend)
+}
+
+// Open mode still terminates CORS preflight at the gateway.
+func TestGateway_AuthDisabled_OPTIONSPreflight(t *testing.T) {
+	cfg := createTestConfig("rpc")
+	disableAuth(cfg)
+
+	gateway, err := New(cfg)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("OPTIONS", "/some/path", nil)
+	req.Header.Set("Origin", "https://example.com")
+	rr := serve(gateway, req)
+
+	assert.Equal(t, http.StatusNoContent, rr.Code)
+	assert.Equal(t, "*", rr.Header().Get("Access-Control-Allow-Origin"))
+}
+
 func TestAuthenticatorConfigDefaults(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{

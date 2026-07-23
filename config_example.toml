@@ -20,8 +20,10 @@ bucket = "your-bucket-name"           # S3 bucket name
 access_key_id = "your-access-key-id"  # S3 access key ID
 secret_key = "your-secret-access-key" # S3 secret access key
 
-# Authentication (required for both types)
+# Authentication (applies to both types)
 [auth]
+enabled = true                            # Set to false for an open gateway: no API key required,
+                                          # requests are proxied as-is and the other auth settings are ignored
 service_url = "http://localhost:9090"     # Authentication service base URL
 service_token = "your-auth-service-token" # Token for auth service requests
 cache_expiration = 300                    # Cache TTL in seconds (default: 300)

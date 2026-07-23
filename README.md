@@ -36,6 +36,7 @@ The config is validated at startup: missing required values (e.g. `rpc.url`, `au
 | `QUASAR_S3_BUCKET`                    | S3 bucket name                           | `my-bucket`                |
 | `QUASAR_S3_ACCESS_KEY_ID`             | S3 access key ID                         | `AKIAIOSFODNN7EXAMPLE`     |
 | `QUASAR_S3_SECRET_KEY`                | S3 secret access key                     | `wJalrXUtnFEMI/K7MDENG...` |
+| `QUASAR_AUTH_ENABLED`                 | API key authentication (default: `true`) | `false` for an open gateway |
 | `QUASAR_AUTH_SERVICE_URL`             | Auth service base URL                    | `http://localhost:9090`    |
 | `QUASAR_AUTH_SERVICE_TOKEN`           | Auth service token                       | `secret-token`             |
 | `QUASAR_AUTH_CACHE_EXPIRATION`        | Cache TTL (seconds)                      | `300`                      |
@@ -52,6 +53,7 @@ The config is validated at startup: missing required values (e.g. `rpc.url`, `au
 - **Authentication**: 
   - Header: `Authorization: Bearer <api-key>`
   - URL (RPC only): `/:8080/<api-key>` (token in path, path rewritten to root)
+  - Open gateway: set `[auth] enabled = false` (or `QUASAR_AUTH_ENABLED=false`) to skip API key validation entirely — requests are proxied as-is (no URL-token path rewrite), the other `[auth]` settings are ignored, and CORS/health/graceful-shutdown behavior stays the same
 - **CORS**: handled by the gateway itself — `OPTIONS` preflight requests are answered with `204` and skip authentication; all responses carry `Access-Control-Allow-Origin: *`
 - **S3 mode**: only `GET`/`HEAD` are allowed; `Range`, `If-None-Match`, and `If-Modified-Since` headers are passed through, so resumable downloads (206) and cache revalidation (304) work
 
